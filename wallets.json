@@ -1,0 +1,47 @@
+{
+  "KZP 96G1": {
+    "company": "KZP",
+    "wallet": "KZP 96G1",
+    "address": "TNZJ5wTSMK4oR79CYzy8BGK6LWNmQxcuM8"
+  },
+  "KZP BLG1": {
+    "company": "KZP",
+    "wallet": "KZP BLG1",
+    "address": "TARvAP993BSFBuQhjc8oG4gviskNDftB7Z"
+  },
+  "KZP WDB1": {
+    "company": "KZP",
+    "wallet": "KZP WDB1",
+    "address": "TEhmKXCPgX64yJQ3t9skuSyUQBxwaWY4KS"
+  },
+  "KZP TH 1": {
+    "company": "KZP",
+    "wallet": "KZP TH 1",
+    "address": "TF2GVKwjVchpEWs1TonJW8yP6HAcvAvG93"
+  },
+  "KZP TH Y 1": {
+    "company": "KZP",
+    "wallet": "KZP TH Y 1",
+    "address": "TSpAswScHnu6WqJDaZzjWEA4ztPSzPRtPZ"
+  },
+  "KZP TH BM 1": {
+    "company": "KZP",
+    "wallet": "KZP TH BM 1",
+    "address": "TS928hvaYDoGNhzYJcvyDSL2EB6XjPUyTh"
+  },
+  "KZP PH 1": {
+    "company": "KZP",
+    "wallet": "KZP PH 1",
+    "address": "THB5JtMUtvmZ94HdCqqL34SzSfJavF58Ga"
+  },
+  "KZP PH BM 1": {
+    "company": "KZP",
+    "wallet": "KZP PH BM 1",
+    "address": "TTRpG11vBzdir9GcD4MmkUNoubGxJUpwsf"
+  },
+  "KZP KZO1": {
+    "company": "KZP",
+    "wallet": "KZP KZO1",
+    "address": "TDj1whxgFJSGktyv9yLR3wZUm5gNK8X7m2"
+  }
+}
