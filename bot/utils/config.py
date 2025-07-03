@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Lark Bot Configuration Module
+Lark Bot Configuration Module - FIXED VERSION
 Manages environment variables, validation, and logging setup
 """
 
@@ -217,7 +217,7 @@ class Config:
     @classmethod
     def get_topic_config(cls) -> Dict[str, Dict[str, str]]:
         """
-        Get topic configuration mapping.
+        Get topic configuration mapping - FIXED VERSION
         
         Returns:
             Dictionary mapping topic names to their IDs and message IDs
@@ -225,15 +225,18 @@ class Config:
         return {
             "quickguide": {
                 "thread_id": cls.LARK_TOPIC_QUICKGUIDE,
-                "message_id": cls.LARK_TOPIC_QUICKGUIDE_MSG
+                "message_id": cls.LARK_TOPIC_QUICKGUIDE_MSG,
+                "chat_id": cls.LARK_CHAT_ID  # ADDED: This was missing!
             },
             "commands": {
                 "thread_id": cls.LARK_TOPIC_COMMANDS,
-                "message_id": cls.LARK_TOPIC_COMMANDS_MSG
+                "message_id": cls.LARK_TOPIC_COMMANDS_MSG,
+                "chat_id": cls.LARK_CHAT_ID  # ADDED: This was missing!
             },
             "dailyreport": {
                 "thread_id": cls.LARK_TOPIC_DAILYREPORT,
-                "message_id": cls.LARK_TOPIC_DAILYREPORT_MSG
+                "message_id": cls.LARK_TOPIC_DAILYREPORT_MSG,
+                "chat_id": cls.LARK_CHAT_ID  # ADDED: This was missing!
             }
         }
     
@@ -276,7 +279,7 @@ class Config:
         topics = cls.get_topic_config()
         summary.append("Topics:")
         for name, config in topics.items():
-            summary.append(f"  - {name}: {config['thread_id'][:10]}...")
+            summary.append(f"  - {name}: thread={config.get('thread_id', 'None')[:10]}..., msg={config.get('message_id', 'None')[:10]}..., chat={config.get('chat_id', 'None')[:10]}...")
         
         # Authorization
         if cls.LARK_AUTHORIZED_USERS and cls.LARK_AUTHORIZED_USERS != [""]:
@@ -286,8 +289,13 @@ class Config:
         
         return "\n".join(summary)
 
+    @classmethod
+    def get_current_time(cls) -> str:
+        """Get current time as formatted string."""
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# Testing functions
+
+# Testing functions remain the same...
 def test_config_validation():
     """Test configuration validation."""
     print("🧪 Testing Configuration Validation...")
@@ -346,8 +354,11 @@ def test_topic_config():
         for name, config in topics.items():
             # Only validate required topics (commands and dailyreport)
             if name in ['commands', 'dailyreport']:
-                if not config.get("thread_id") or not config.get("message_id"):
+                if not config.get("thread_id") or not config.get("message_id") or not config.get("chat_id"):
                     print(f"⚠️ Topic '{name}' missing required configuration")
+                    print(f"   thread_id: {config.get('thread_id', 'MISSING')}")
+                    print(f"   message_id: {config.get('message_id', 'MISSING')}")
+                    print(f"   chat_id: {config.get('chat_id', 'MISSING')}")
                     return False
         
         print("✅ All topics properly configured")

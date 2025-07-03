@@ -23,7 +23,7 @@ class HelpHandler:
                 await self._send_disabled_message(context)
                 return False
 
-            
+
             message = self._get_help_text()
             await context.topic_manager.send_command_response(message)
 
@@ -37,33 +37,31 @@ class HelpHandler:
 
     def _get_help_text(self) -> str:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        return f"""📋 __Available Commands:__
-        **Wallet Management:**
-        • `/start` – Start the bot and check connection  
-        • `/help` – Show available commands and their descriptions  
-        • `/list` – Show all configured wallets  
-        • `/add "company" "wallet" "address"` – Add new wallet  
-        • `/remove "wallet_name"` – Remove wallet  
-        • `/check` – Check all wallet balances  
-        • `/check "wallet_name"` – Check specific wallet balance  
-        • `/check "wallet1" "wallet2"` – Check multiple specific wallets  
-
-        **Examples:**
-        • `/add "KZP" "KZP WDB2" "TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWY4KS"`  
-        • `/remove "KZP WDB2"`  
-        • `/list`  
-        • `/check`  
-        • `/check "KZP 96G1"`  
-        • `/check "KZP 96G1" "KZP WDB2"`  
-
-        **Notes:**
-        • All arguments must be in quotes  
-        • TRC20 addresses start with `T` (34 characters)  
-        • Balance reports sent via scheduled messages at midnight GMT+7  
-        • Only authorized team members can use commands
-
-        🕒 {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-        """
+        return (
+            "📋 **Available Commands:**\n\n"
+            "**Wallet Management:**\n"
+            "• `/start` - Start the bot and check connection\n"
+            "• `/help` - Show available commands and their descriptions\n"
+            "• `/list` - Show all configured wallets\n"
+            "• `/add \"company\" \"wallet\" \"address\"` - Add new wallet\n"
+            "• `/remove \"wallet_name\"` - Remove wallet\n"
+            "• `/check` - Check all wallet balances\n"
+            "• `/check \"wallet_name\"` - Check specific wallet balance\n"
+            "• `/check \"wallet1\" \"wallet2\"` - Check multiple specific wallets\n\n"
+            "**Examples:**\n"
+            "• `/add \"KZP\" \"KZP WDB2\" \"TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS\"`\n"
+            "• `/remove \"KZP WDB2\"`\n"
+            "• `/list`\n"
+            "• `/check`\n"
+            "• `/check \"KZP 96G1\"`\n"
+            "• `/check \"KZP 96G1\" \"KZP WDB2\"`\n\n"
+            "**Notes:**\n"
+            "• All arguments must be in quotes\n"
+            "• TRC20 addresses start with 'T' (34 characters)\n"
+            "• Balance reports sent via scheduled messages at midnight GMT+7\n"
+            "• Only authorized team members can use commands\n\n"
+            f"📅 {now}"
+        )
 
     async def _send_disabled_message(self, context: Any):
         await context.topic_manager.send_command_response("🚫 This command is currently disabled.")

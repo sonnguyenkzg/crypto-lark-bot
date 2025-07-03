@@ -350,6 +350,25 @@ import os
 
 LARK_BOT_URL = "https://open.larksuite.com/open-apis/im/v1/messages"
 
+import httpx
+import uuid
+from bot.utils import config
+async def send_text_message(chat_id: str, root_id: str, text: str):
+    url = "https://open.larksuite.com/open-apis/im/v1/messages"
+    headers = {
+        "Authorization": f"Bearer {config.LARK_BOT_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "receive_id": chat_id,
+        "msg_type": "text",
+        "content": json.dumps({"text": text}),
+        "uuid": str(uuid.uuid4()),
+        "root_id": root_id,
+    }
+    async with httpx.AsyncClient() as client:
+        await client.post(url, headers=headers, json=payload)
+
 async def send_message_card(chat_id: str, root_id: str, card: dict):
     headers = {
         "Authorization": f"Bearer {os.getenv('LARK_BOT_TOKEN')}",
