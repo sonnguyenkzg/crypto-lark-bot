@@ -5,9 +5,10 @@ aiohttp>=3.8.0
 python-dotenv>=1.0.0
 schedule>=1.2.0
 
-# Crypto/Web3 dependencies (for wallet operations)
+# Crypto/Web3 dependencies
 requests>=2.28.0
 
 # Development dependencies
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
+httpx

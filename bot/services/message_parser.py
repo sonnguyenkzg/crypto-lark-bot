@@ -13,195 +13,47 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 class LarkMessage:
-    """
-    Represents a parsed Lark message with easy access to properties.
-    """
-    
-    def __init__(self, raw_message: Dict[str, Any]):
-        self.raw = raw_message
-        self._parsed_content = None
-        
-    @property
-    def message_id(self) -> str:
-        """Get message ID."""
-        return self.raw.get("message_id", "")
-    
+    def __init__(self, event):
+        self.raw = event
+        self.message = event.get("message", {})
+        self.sender = event.get("sender", {})
+
     @property
     def sender_id(self) -> str:
-        """Get sender user ID."""
-        sender = self.raw.get("sender", {})
-        return sender.get("sender_id", {}).get("user_id", "")
-    
+        try:
+            sid = self.sender.get("sender_id", {})
+            resolved_id = sid.get("user_id") or sid.get("open_id") or sid.get("union_id", "")
+            if not resolved_id:
+                print("⚠️ sender_id not found in:", json.dumps(self.sender, indent=2))
+            return resolved_id
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to extract sender_id: {e}")
+            return ""
+
     @property
-    def sender_type(self) -> str:
-        """Get sender type (user, app, etc.)."""
-        sender = self.raw.get("sender", {})
-        return sender.get("sender_type", "")
+    def content(self) -> str:
+        try:
+            raw = self.message.get("content", "")
+            if isinstance(raw, str):
+                parsed = json.loads(raw)
+                return parsed.get("text", raw)
+            return raw
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to parse content: {e}")
+            return str(raw)
+
     
     @property
     def chat_id(self) -> str:
-        """Get chat ID."""
-        return self.raw.get("chat_id", "")
+        return self.message.get("chat_id", "")
     
     @property
-    def thread_id(self) -> Optional[str]:
-        """Get thread ID (topic ID)."""
-        return self.raw.get("thread_id")
-    
-    @property
-    def parent_id(self) -> Optional[str]:
-        """Get parent message ID."""
-        return self.raw.get("parent_id")
-    
-    @property
-    def create_time(self) -> datetime:
-        """Get message creation time as datetime."""
-        timestamp = int(self.raw.get("create_time", 0))
-        return datetime.fromtimestamp(timestamp / 1000)  # Lark uses milliseconds
-    
-    @property
-    def message_type(self) -> str:
-        """Get message type (text, rich_text, etc.)."""
-        return self.raw.get("msg_type", "")
-    
-    @property
-    def content(self) -> str:
-        """Get parsed text content from message."""
-        if self._parsed_content is None:
-            self._parsed_content = self._extract_text_content()
-        return self._parsed_content
-    
-    @property
-    def mentions(self) -> List[str]:
-        """Get list of mentioned user IDs."""
-        mentions = self.raw.get("mentions", [])
-        return [mention.get("id", {}).get("user_id", "") for mention in mentions]
-    
+    def thread_id(self) -> str:
+        return self.message.get("thread_id", "")
+
     @property
     def is_from_bot(self) -> bool:
-        """Check if message is from a bot."""
-        return self.sender_type == "app"
-    
-    @property
-    def is_in_topic(self) -> bool:
-        """Check if message is in a topic/thread."""
-        return self.thread_id is not None
-    
-    def _extract_text_content(self) -> str:
-        """
-        Extract text content from Lark message body.
-        Handles different message types and nested content structure.
-        """
-        try:
-            body = self.raw.get("body", {})
-            content = body.get("content", "")
-            
-            # If content is a string, try to parse it as JSON
-            if isinstance(content, str):
-                try:
-                    content_json = json.loads(content)
-                except json.JSONDecodeError:
-                    return content
-            else:
-                content_json = content
-            
-            # Handle different message types
-            if self.message_type == "text":
-                return content_json.get("text", "")
-            
-            elif self.message_type == "rich_text":
-                # Extract text from rich text elements
-                return self._extract_rich_text(content_json)
-            
-            elif self.message_type == "post":
-                # Extract text from post content
-                return self._extract_post_text(content_json)
-            
-            else:
-                # Try to find text in any available field
-                if isinstance(content_json, dict):
-                    text_fields = ["text", "content", "title"]
-                    for field in text_fields:
-                        if field in content_json:
-                            return str(content_json[field])
-                
-                return str(content_json) if content_json else ""
-                
-        except Exception as e:
-            logger.error(f"❌ Error extracting text content: {e}")
-            return ""
-    
-    def _extract_rich_text(self, content: Dict[str, Any]) -> str:
-        """Extract text from rich text content."""
-        try:
-            elements = content.get("elements", [])
-            text_parts = []
-            
-            for element in elements:
-                if element.get("tag") == "text":
-                    text_parts.append(element.get("text", ""))
-                elif element.get("tag") == "a":  # Links
-                    text_parts.append(element.get("text", ""))
-                elif element.get("tag") == "at":  # Mentions
-                    text_parts.append(f"@{element.get('user_name', 'user')}")
-            
-            return " ".join(text_parts)
-            
-        except Exception as e:
-            logger.error(f"❌ Error extracting rich text: {e}")
-            return ""
-    
-    def _extract_post_text(self, content: Dict[str, Any]) -> str:
-        """Extract text from post content."""
-        try:
-            # Posts can have multiple language versions
-            post_content = content.get("post", {})
-            
-            # Try different language codes
-            lang_codes = ["en_us", "zh_cn", "ja_jp"]
-            for lang in lang_codes:
-                if lang in post_content:
-                    elements = post_content[lang]
-                    return self._extract_elements_text(elements)
-            
-            # If no specific language, try first available
-            if post_content:
-                first_lang = next(iter(post_content.values()))
-                return self._extract_elements_text(first_lang)
-            
-            return ""
-            
-        except Exception as e:
-            logger.error(f"❌ Error extracting post text: {e}")
-            return ""
-    
-    def _extract_elements_text(self, elements: List[Dict[str, Any]]) -> str:
-        """Extract text from a list of post elements."""
-        text_parts = []
-        
-        for element in elements:
-            if element.get("tag") == "text":
-                text_parts.append(element.get("text", ""))
-            elif element.get("tag") == "a":
-                text_parts.append(element.get("text", ""))
-        
-        return " ".join(text_parts)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert message to dictionary with key properties."""
-        return {
-            "message_id": self.message_id,
-            "sender_id": self.sender_id,
-            "sender_type": self.sender_type,
-            "chat_id": self.chat_id,
-            "thread_id": self.thread_id,
-            "content": self.content,
-            "create_time": self.create_time.isoformat(),
-            "message_type": self.message_type,
-            "is_from_bot": self.is_from_bot,
-            "is_in_topic": self.is_in_topic,
-            "mentions": self.mentions
-        }
+        return self.sender.get("sender_type") == "bot"
 
 class LarkMessageParser:
     """
@@ -211,18 +63,10 @@ class LarkMessageParser:
     def __init__(self, command_prefix: str = "/"):
         self.command_prefix = command_prefix
         
-    def parse_message(self, raw_message: Dict[str, Any]) -> LarkMessage:
-        """
-        Parse a raw Lark message into a LarkMessage object.
-        
-        Args:
-            raw_message: Raw message data from Lark API
-            
-        Returns:
-            Parsed LarkMessage object
-        """
-        return LarkMessage(raw_message)
-    
+    def parse_message(self, event: dict) -> LarkMessage:
+        return LarkMessage(event)
+
+
     def is_command(self, message: LarkMessage) -> bool:
         """
         Check if a message contains a bot command.
