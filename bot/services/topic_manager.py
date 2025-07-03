@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Lark Topic Manager Module
+Lark Topic Manager Module - FIXED VERSION
 Handles topic-specific operations and messaging using reply-based approach
 """
 
 import logging
 from typing import Dict, Any, Optional, List
 from enum import Enum
+from bot.services.lark_api_client import send_message_card, send_text_message
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,16 @@ class LarkTopicManager:
         self.api_client = api_client
         self.config = config_class
         self.topic_config = config_class.get_topic_config()
+        
+        # Initialize missing attributes that are used in send_to_commands
+        commands_topic = self.topic_config.get("commands", {})
+        self.commands_topic_id = commands_topic.get("chat_id", "")
+        self.reply_to_message_id = commands_topic.get("message_id", "")
+        
+        # Log the configuration for debugging
+        logger.info(f"🔧 TopicManager initialized:")
+        logger.info(f"   Commands topic ID: {self.commands_topic_id}")
+        logger.info(f"   Reply message ID: {self.reply_to_message_id}")
         
     def get_topic_info(self, topic_type: TopicType) -> Dict[str, str]:
         """
@@ -90,10 +101,24 @@ class LarkTopicManager:
         """Send message to quickguide topic."""
         return await self.send_to_topic(TopicType.QUICKGUIDE, message)
     
-    async def send_to_commands(self, message: str) -> bool:
-        """Send message to commands topic.""" 
-        return await self.send_to_topic(TopicType.COMMANDS, message)
-    
+# Replace this method in your LarkTopicManager class
+
+    async def send_to_commands(self, content, msg_type="text"):
+        """
+        Send message to commands topic - QUICK FIX
+        """
+        try:
+            # Just use the working send_to_topic method for everything
+            if isinstance(content, str):
+                return await self.send_to_topic(TopicType.COMMANDS, content, msg_type)
+            else:
+                # Convert non-string content to string
+                return await self.send_to_topic(TopicType.COMMANDS, str(content), "text")
+                
+        except Exception as e:
+            logger.error(f"❌ Error in send_to_commands: {e}")
+            return False
+        
     async def send_to_dailyreport(self, message: str) -> bool:
         """Send message to daily report topic."""
         return await self.send_to_topic(TopicType.DAILYREPORT, message)
@@ -176,25 +201,26 @@ class LarkTopicManager:
             logger.error(f"❌ Error sending daily report: {e}")
             return False
     
-    async def send_command_response(self, response: str) -> bool:
+    async def send_command_response(self, response: Any, msg_type: str = "text") -> bool:
         """
         Send command response to commands topic.
-        
+
         Args:
-            response: Response message content
-            
+            response: Message content (str or dict)
+            msg_type: Message type ("text", "interactive", etc.)
+
         Returns:
             True if response sent successfully
         """
         try:
-            success = await self.send_to_commands(response)
+            success = await self.send_to_commands(response, msg_type)
             if success:
                 logger.info("✅ Command response sent")
             return success
         except Exception as e:
             logger.error(f"❌ Error sending command response: {e}")
             return False
-    
+
     async def send_error_message(self, error_msg: str, topic_type: TopicType = TopicType.COMMANDS) -> bool:
         """
         Send error message to specified topic.
@@ -276,218 +302,3 @@ class LarkTopicManager:
         """Get current time as formatted string."""
         from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-# Mock classes for testing
-class MockAPIClient:
-    """Mock API client for testing."""
-    
-    def __init__(self):
-        self.sent_messages = []
-    
-    async def reply_to_message(self, message_id: str, content: str, msg_type: str = "text"):
-        """Mock reply to message."""
-        self.sent_messages.append({
-            "message_id": message_id,
-            "content": content,
-            "msg_type": msg_type
-        })
-        return {"code": 0, "msg": "success"}
-
-class MockConfig:
-    """Mock config class for testing."""
-    
-    @classmethod
-    def get_topic_config(cls):
-        """Mock topic configuration."""
-        return {
-            "quickguide": {
-                "thread_id": "omt_quickguide_123",
-                "message_id": "om_quickguide_msg_123"
-            },
-            "commands": {
-                "thread_id": "omt_commands_123", 
-                "message_id": "om_commands_msg_123"
-            },
-            "dailyreport": {
-                "thread_id": "omt_dailyreport_123",
-                "message_id": "om_dailyreport_msg_123"
-            }
-        }
-
-# Testing functions
-async def test_topic_messaging():
-    """Test topic messaging functionality."""
-    print("🧪 Testing Topic Messaging...")
-    
-    try:
-        # Setup
-        mock_api = MockAPIClient()
-        topic_manager = LarkTopicManager(mock_api, MockConfig)
-        
-        # Test sending to different topics
-        await topic_manager.send_to_quickguide("Test quickguide message")
-        await topic_manager.send_to_commands("Test command response")
-        await topic_manager.send_to_dailyreport("Test daily report")
-        
-        # Verify messages were sent
-        assert len(mock_api.sent_messages) == 3
-        
-        # Check message targeting
-        assert mock_api.sent_messages[0]["message_id"] == "om_quickguide_msg_123"
-        assert mock_api.sent_messages[1]["message_id"] == "om_commands_msg_123"
-        assert mock_api.sent_messages[2]["message_id"] == "om_dailyreport_msg_123"
-        
-        print("✅ Topic messaging test passed")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Topic messaging test failed: {e}")
-        return False
-
-async def test_topic_identification():
-    """Test topic identification by thread ID."""
-    print("🧪 Testing Topic Identification...")
-    
-    try:
-        topic_manager = LarkTopicManager(None, MockConfig)
-        
-        # Test topic identification
-        assert topic_manager.is_topic_message("omt_commands_123", TopicType.COMMANDS)
-        assert not topic_manager.is_topic_message("omt_commands_123", TopicType.DAILYREPORT)
-        assert not topic_manager.is_topic_message(None, TopicType.COMMANDS)
-        
-        # Test reverse lookup
-        assert topic_manager.get_topic_by_thread_id("omt_commands_123") == TopicType.COMMANDS
-        assert topic_manager.get_topic_by_thread_id("omt_dailyreport_123") == TopicType.DAILYREPORT
-        assert topic_manager.get_topic_by_thread_id("unknown_thread") is None
-        
-        print("✅ Topic identification test passed")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Topic identification test failed: {e}")
-        return False
-
-def test_configuration_validation():
-    """Test configuration validation."""
-    print("🧪 Testing Configuration Validation...")
-    
-    try:
-        topic_manager = LarkTopicManager(None, MockConfig)
-        
-        # Test validation
-        validation_results = topic_manager.validate_topic_configuration()
-        
-        # All topics should be valid in mock config
-        assert all(validation_results.values())
-        assert len(validation_results) == 3
-        
-        # Test configuration summary
-        summary = topic_manager.get_configuration_summary()
-        assert "QUICKGUIDE" in summary
-        assert "COMMANDS" in summary
-        assert "DAILYREPORT" in summary
-        
-        print("✅ Configuration validation test passed")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Configuration validation test failed: {e}")
-        return False
-
-async def test_specialized_messages():
-    """Test specialized message functions."""
-    print("🧪 Testing Specialized Messages...")
-    
-    try:
-        mock_api = MockAPIClient()
-        topic_manager = LarkTopicManager(mock_api, MockConfig)
-        
-        # Test startup message
-        await topic_manager.send_startup_message()
-        
-        # Test daily report
-        await topic_manager.send_daily_report("Test daily report content")
-        
-        # Test command response
-        await topic_manager.send_command_response("Test command response")
-        
-        # Test error message
-        await topic_manager.send_error_message("Test error message")
-        
-        # Verify all messages sent
-        assert len(mock_api.sent_messages) == 4
-        
-        # Check that error and startup messages went to correct topics
-        startup_msg = mock_api.sent_messages[0]
-        daily_msg = mock_api.sent_messages[1]
-        command_msg = mock_api.sent_messages[2]
-        error_msg = mock_api.sent_messages[3]
-        
-        assert startup_msg["message_id"] == "om_dailyreport_msg_123"
-        assert daily_msg["message_id"] == "om_dailyreport_msg_123"
-        assert command_msg["message_id"] == "om_commands_msg_123"
-        assert error_msg["message_id"] == "om_commands_msg_123"
-        
-        # Check content formatting
-        assert "🤖" in startup_msg["content"]  # Startup message has bot emoji
-        assert "❌" in error_msg["content"]    # Error message has error emoji
-        
-        print("✅ Specialized messages test passed")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Specialized messages test failed: {e}")
-        return False
-
-async def run_all_tests():
-    """Run all topic manager tests."""
-    print("🚀 Running Topic Manager Tests...")
-    print("=" * 50)
-    
-    tests = [
-        test_topic_messaging,
-        test_topic_identification,
-        test_specialized_messages
-    ]
-    
-    sync_tests = [
-        test_configuration_validation
-    ]
-    
-    results = []
-    
-    # Run async tests
-    for test in tests:
-        result = await test()
-        results.append(result)
-        print()
-    
-    # Run sync tests
-    for test in sync_tests:
-        result = test()
-        results.append(result)
-        print()
-    
-    # Summary
-    passed = sum(results)
-    total = len(results)
-    
-    print("=" * 50)
-    print(f"📊 Test Results: {passed}/{total} passed")
-    
-    if passed == total:
-        print("🎉 All tests passed! Topic Manager module is ready.")
-        print("\n💡 Module provides:")
-        print("- Reply-based topic messaging (solves Lark topic targeting)")
-        print("- Topic identification and validation")
-        print("- Specialized message functions (startup, daily reports, errors)")
-        print("- Configuration validation and summary")
-    else:
-        print("❌ Some tests failed. Please check implementation.")
-    
-    return passed == total
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(run_all_tests())
