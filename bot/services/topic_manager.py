@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Lark Topic Manager Module - FIXED VERSION
-Handles topic-specific operations and messaging using reply-based approach
+Enhanced Topic Manager with proper interactive card support
 """
 
 import logging
+import json
 from typing import Dict, Any, Optional, List
 from enum import Enum
-from bot.services.lark_api_client import send_message_card, send_text_message
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +18,7 @@ class TopicType(Enum):
 
 class LarkTopicManager:
     """
-    Manages topic-specific operations for Lark bot.
-    Uses reply-based messaging to target specific topics.
+    Enhanced Topic Manager with proper card message support.
     """
     
     def __init__(self, api_client, config_class):
@@ -35,7 +33,7 @@ class LarkTopicManager:
         self.config = config_class
         self.topic_config = config_class.get_topic_config()
         
-        # Initialize missing attributes that are used in send_to_commands
+        # Initialize attributes for direct API calls
         commands_topic = self.topic_config.get("commands", {})
         self.commands_topic_id = commands_topic.get("chat_id", "")
         self.reply_to_message_id = commands_topic.get("message_id", "")
@@ -46,15 +44,7 @@ class LarkTopicManager:
         logger.info(f"   Reply message ID: {self.reply_to_message_id}")
         
     def get_topic_info(self, topic_type: TopicType) -> Dict[str, str]:
-        """
-        Get topic configuration information.
-        
-        Args:
-            topic_type: Type of topic to get info for
-            
-        Returns:
-            Dictionary with thread_id and message_id
-        """
+        """Get topic configuration information."""
         topic_name = topic_type.value
         topic_info = self.topic_config.get(topic_name, {})
         
@@ -64,17 +54,7 @@ class LarkTopicManager:
         return topic_info
     
     async def send_to_topic(self, topic_type: TopicType, message: str, msg_type: str = "text") -> bool:
-        """
-        Send a message to a specific topic using reply mechanism.
-        
-        Args:
-            topic_type: Target topic type
-            message: Message content to send
-            msg_type: Message type (text, rich_text, etc.)
-            
-        Returns:
-            True if message sent successfully, False otherwise
-        """
+        """Send a message to a specific topic using reply mechanism."""
         try:
             topic_info = self.get_topic_info(topic_type)
             message_id = topic_info.get("message_id")
@@ -101,39 +81,65 @@ class LarkTopicManager:
         """Send message to quickguide topic."""
         return await self.send_to_topic(TopicType.QUICKGUIDE, message)
     
-# Replace this method in your LarkTopicManager class
-
     async def send_to_commands(self, content, msg_type="text"):
         """
-        Send message to commands topic - QUICK FIX
+        Enhanced send_to_commands with proper card support.
+        
+        Args:
+            content: Message content (str for text, dict for cards)
+            msg_type: Message type ("text" or "interactive")
         """
         try:
-            # Just use the working send_to_topic method for everything
-            if isinstance(content, str):
-                return await self.send_to_topic(TopicType.COMMANDS, content, msg_type)
+            if msg_type == "interactive" and isinstance(content, dict):
+                # Send interactive card using the API client's reply method
+                # Convert card dict to JSON string
+                card_json = json.dumps(content)
+                
+                # Use the API client to send the card
+                topic_info = self.get_topic_info(TopicType.COMMANDS)
+                message_id = topic_info.get("message_id")
+                
+                if not message_id:
+                    logger.error("❌ No message ID configured for commands topic")
+                    return False
+                
+                response = await self.api_client.reply_to_message(
+                    message_id, 
+                    card_json, 
+                    "interactive"
+                )
+                
+                if response:
+                    logger.info("✅ Interactive card sent to commands topic")
+                    return True
+                else:
+                    logger.error("❌ Failed to send interactive card")
+                    return False
+                    
             else:
-                # Convert non-string content to string
+                # Handle text messages
+                if isinstance(content, dict):
+                    # Convert dict to text representation as fallback
+                    content = f"📋 **Message Content**\n{str(content)}"
+                
                 return await self.send_to_topic(TopicType.COMMANDS, str(content), "text")
                 
         except Exception as e:
             logger.error(f"❌ Error in send_to_commands: {e}")
+            # Fallback to text message
+            if isinstance(content, str):
+                return await self.send_to_topic(TopicType.COMMANDS, content, "text")
+            elif isinstance(content, dict):
+                fallback_text = f"📋 **Card Message**\n{json.dumps(content, indent=2)}"
+                return await self.send_to_topic(TopicType.COMMANDS, fallback_text, "text")
             return False
-        
+
     async def send_to_dailyreport(self, message: str) -> bool:
         """Send message to daily report topic."""
         return await self.send_to_topic(TopicType.DAILYREPORT, message)
     
     def is_topic_message(self, message_thread_id: Optional[str], topic_type: TopicType) -> bool:
-        """
-        Check if a message belongs to a specific topic.
-        
-        Args:
-            message_thread_id: Thread ID from the message
-            topic_type: Topic type to check against
-            
-        Returns:
-            True if message is from the specified topic
-        """
+        """Check if a message belongs to a specific topic."""
         if not message_thread_id:
             return False
             
@@ -143,15 +149,7 @@ class LarkTopicManager:
         return message_thread_id == expected_thread_id
     
     def get_topic_by_thread_id(self, thread_id: str) -> Optional[TopicType]:
-        """
-        Get topic type by thread ID.
-        
-        Args:
-            thread_id: Thread ID to look up
-            
-        Returns:
-            TopicType if found, None otherwise
-        """
+        """Get topic type by thread ID."""
         for topic_type in TopicType:
             topic_info = self.get_topic_info(topic_type)
             if topic_info.get("thread_id") == thread_id:
@@ -160,21 +158,49 @@ class LarkTopicManager:
         return None
     
     async def send_startup_message(self) -> bool:
-        """
-        Send bot startup message to daily report topic.
-        
-        Returns:
-            True if message sent successfully
-        """
-        startup_message = (
-            "🤖 **Lark Crypto Bot Started**\n"
-            f"📅 Started at: {self._get_current_time()}\n"
-            "🎯 Ready to monitor crypto wallets\n"
-            "💡 Use `/help` in #commands for available commands"
-        )
+        """Send bot startup message with professional formatting."""
+        startup_card = {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": True
+            },
+            "header": {
+                "template": "green",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "🤖 Crypto Wallet Monitor Started"
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"**📅 Started at:** {self._get_current_time()}\n**🎯 Status:** Ready to monitor crypto wallets\n**💡 Next step:** Use `/help` in #commands for available commands"
+                    }
+                },
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {
+                                "content": "📋 View Commands",
+                                "tag": "plain_text"
+                            },
+                            "type": "primary",
+                            "value": {
+                                "action": "help"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
         
         try:
-            success = await self.send_to_dailyreport(startup_message)
+            # Send as interactive card to daily report
+            success = await self.send_to_dailyreport(json.dumps(startup_card))
             if success:
                 logger.info("✅ Startup message sent to daily report topic")
             return success
@@ -183,15 +209,7 @@ class LarkTopicManager:
             return False
     
     async def send_daily_report(self, report_content: str) -> bool:
-        """
-        Send daily crypto report to daily report topic.
-        
-        Args:
-            report_content: Formatted report content
-            
-        Returns:
-            True if report sent successfully
-        """
+        """Send daily crypto report to daily report topic."""
         try:
             success = await self.send_to_dailyreport(report_content)
             if success:
@@ -203,10 +221,10 @@ class LarkTopicManager:
     
     async def send_command_response(self, response: Any, msg_type: str = "text") -> bool:
         """
-        Send command response to commands topic.
+        Send command response to commands topic with enhanced formatting support.
 
         Args:
-            response: Message content (str or dict)
+            response: Message content (str, dict for cards)
             msg_type: Message type ("text", "interactive", etc.)
 
         Returns:
@@ -215,41 +233,54 @@ class LarkTopicManager:
         try:
             success = await self.send_to_commands(response, msg_type)
             if success:
-                logger.info("✅ Command response sent")
+                logger.info(f"✅ Command response sent (type: {msg_type})")
             return success
         except Exception as e:
             logger.error(f"❌ Error sending command response: {e}")
             return False
 
     async def send_error_message(self, error_msg: str, topic_type: TopicType = TopicType.COMMANDS) -> bool:
-        """
-        Send error message to specified topic.
-        
-        Args:
-            error_msg: Error message content
-            topic_type: Target topic (defaults to commands)
-            
-        Returns:
-            True if error message sent successfully
-        """
-        formatted_error = f"❌ **Error**: {error_msg}"
+        """Send error message with professional formatting."""
+        error_card = {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": False
+            },
+            "header": {
+                "template": "red",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "❌ Error"
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"**Error:** {error_msg}"
+                    }
+                }
+            ]
+        }
         
         try:
-            success = await self.send_to_topic(topic_type, formatted_error)
+            if topic_type == TopicType.COMMANDS:
+                success = await self.send_to_commands(error_card, "interactive")
+            else:
+                success = await self.send_to_topic(topic_type, json.dumps(error_card), "interactive")
+                
             if success:
                 logger.info(f"✅ Error message sent to {topic_type.value}")
             return success
         except Exception as e:
             logger.error(f"❌ Error sending error message: {e}")
-            return False
+            # Fallback to text
+            formatted_error = f"❌ **Error**: {error_msg}"
+            return await self.send_to_topic(topic_type, formatted_error, "text")
     
     def validate_topic_configuration(self) -> Dict[str, bool]:
-        """
-        Validate that all topics are properly configured.
-        
-        Returns:
-            Dictionary mapping topic names to their configuration status
-        """
+        """Validate that all topics are properly configured."""
         validation_results = {}
         
         for topic_type in TopicType:
@@ -258,8 +289,9 @@ class LarkTopicManager:
             
             has_thread_id = bool(topic_info.get("thread_id"))
             has_message_id = bool(topic_info.get("message_id"))
+            has_chat_id = bool(topic_info.get("chat_id"))
             
-            is_valid = has_thread_id and has_message_id
+            is_valid = has_thread_id and has_message_id and has_chat_id
             validation_results[topic_name] = is_valid
             
             if not is_valid:
@@ -268,17 +300,14 @@ class LarkTopicManager:
                     missing.append("thread_id")
                 if not has_message_id:
                     missing.append("message_id")
+                if not has_chat_id:
+                    missing.append("chat_id")
                 logger.warning(f"⚠️ Topic {topic_name} missing: {', '.join(missing)}")
         
         return validation_results
     
     def get_configuration_summary(self) -> str:
-        """
-        Get summary of topic configuration.
-        
-        Returns:
-            Formatted configuration summary
-        """
+        """Get summary of topic configuration."""
         summary = ["🎯 Topic Manager Configuration:"]
         
         for topic_type in TopicType:
@@ -287,14 +316,17 @@ class LarkTopicManager:
             
             thread_id = topic_info.get("thread_id", "Not configured")
             message_id = topic_info.get("message_id", "Not configured")
+            chat_id = topic_info.get("chat_id", "Not configured")
             
             # Truncate IDs for display
             thread_display = thread_id[:15] + "..." if len(thread_id) > 15 else thread_id
             message_display = message_id[:15] + "..." if len(message_id) > 15 else message_id
+            chat_display = chat_id[:15] + "..." if len(chat_id) > 15 else chat_id
             
             summary.append(f"  📌 {topic_name.upper()}:")
             summary.append(f"     Thread ID:  {thread_display}")
             summary.append(f"     Message ID: {message_display}")
+            summary.append(f"     Chat ID:    {chat_display}")
         
         return "\n".join(summary)
     

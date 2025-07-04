@@ -391,6 +391,77 @@ async def send_message_card(chat_id: str, root_id: str, card: dict):
         response.raise_for_status()
 
 
+#!/usr/bin/env python3
+"""
+Enhanced reply_to_message method for LarkAPIClient to handle interactive cards
+Add this to your existing LarkAPIClient class
+"""
+
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+async def reply_to_message(self, message_id: str, content: str, msg_type: str = "text") -> Dict[str, Any]:
+    """
+    Enhanced reply to a specific message with support for interactive cards.
+    
+    Args:
+        message_id: ID of message to reply to
+        content: Reply content (string for text, JSON string for cards)
+        msg_type: Message type (text, interactive, etc.)
+        
+    Returns:
+        Response data from API
+    """
+    endpoint = f"/im/v1/messages/{message_id}/reply"
+    
+    try:
+        if msg_type == "interactive":
+            # Handle interactive card messages
+            if isinstance(content, str):
+                # Assume content is already JSON string
+                try:
+                    card_data = json.loads(content)
+                except json.JSONDecodeError:
+                    logger.error("❌ Invalid JSON in card content")
+                    raise ValueError("Card content must be valid JSON")
+            else:
+                # Convert dict to JSON
+                card_data = content
+                content = json.dumps(card_data)
+            
+            payload = {
+                "msg_type": "interactive",
+                "content": content  # JSON string for cards
+            }
+            
+        elif msg_type == "text":
+            # Handle text messages
+            payload = {
+                "msg_type": "text",
+                "content": json.dumps({"text": content})
+            }
+            
+        else:
+            # Handle other message types
+            payload = {
+                "msg_type": msg_type,
+                "content": content if msg_type != "text" else json.dumps({"text": content})
+            }
+        
+        logger.info(f"💬 Replying to message {message_id} (type: {msg_type})")
+        
+        # Make the API request
+        response = await self._make_request("POST", endpoint, json=payload)
+        
+        logger.info(f"✅ Reply sent successfully (type: {msg_type})")
+        return response
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to reply to message {message_id}: {e}")
+        raise
+
 if __name__ == "__main__":
     # Run test
     asyncio.run(test_lark_client())
