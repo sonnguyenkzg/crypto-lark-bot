@@ -79,7 +79,7 @@ class HelpHandler:
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": "• `/start` - Start the bot and check connection\n• `/help` - Show available commands and their descriptions\n• `/list` - Show all configured wallets\n• `/add \"company\" \"wallet\" \"address\"` - Add new wallet\n• `/remove \"wallet_name\"` - Remove wallet\n• `/check` - Check all wallet balances\n• `/check \"wallet_name\"` - Check specific wallet balance\n• `/check \"wallet1\" \"wallet2\"` - Check multiple specific wallets"
+                                "content": "• **/start** - Start the bot and check connection\n• **/help** - Show available commands and their descriptions\n• **/list** - Show all configured wallets\n• **/add \"company\" \"wallet\" \"address\"** - Add new wallet\n• **/remove \"wallet_name\"** - Remove wallet\n• **/check** - Check all wallet balances\n• **/check \"wallet_name\"** - Check specific wallet balance\n• **/check \"wallet1\" \"wallet2\"** - Check multiple specific wallets"
                             }
                         }
                     ]
@@ -105,7 +105,7 @@ class HelpHandler:
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": "• `/add \"KZP\" \"KZP WDB2\" \"TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS\"`\n• `/remove \"KZP WDB2\"`\n• `/list`\n• `/check`\n• `/check \"KZP 96G1\"`\n• `/check \"KZP 96G1\" \"KZP WDB2\"`"
+                                "content": "• **/add \"KZP\" \"KZP WDB2\" \"TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS\"**\n• **/remove \"KZP WDB2\"**\n• **/list**\n• **/check**\n• **/check \"KZP 96G1\"**\n• **/check \"KZP 96G1\" \"KZP WDB2\"**"
                             }
                         }
                     ]
@@ -186,24 +186,24 @@ class HelpHandler:
         return f"""🤖 **Crypto Wallet Monitor Bot**
 
 **🔐 Wallet Management:**
-• `/start` - Start the bot and check connection
-• `/help` - Show available commands and their descriptions  
-• `/list` - Show all configured wallets
-• `/add "company" "wallet" "address"` - Add new wallet
-• `/remove "wallet_name"` - Remove wallet
-• `/check` - Check all wallet balances
-• `/check "wallet_name"` - Check specific wallet balance
-• `/check "wallet1" "wallet2"` - Check multiple specific wallets
+• **/start** - Start the bot and check connection
+• **/help** - Show available commands and their descriptions  
+• **/list** - Show all configured wallets
+• **/add "company" "wallet" "address"** - Add new wallet
+• **/remove "wallet_name"** - Remove wallet
+• **/check** - Check all wallet balances
+• **/check "wallet_name"** - Check specific wallet balance
+• **/check "wallet1" "wallet2"** - Check multiple specific wallets
 
 ---
 
 **📝 Examples:**
-• `/add "KZP" "KZP WDB2" "TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS"`
-• `/remove "KZP WDB2"`
-• `/list`
-• `/check`
-• `/check "KZP 96G1"`
-• `/check "KZP 96G1" "KZP WDB2"`
+• **/add "KZP" "KZP WDB2" "TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS"**
+• **/remove "KZP WDB2"**
+• **/list**
+• **/check**
+• **/check "KZP 96G1"**
+• **/check "KZP 96G1" "KZP WDB2"**
 
 ---
 
@@ -261,7 +261,7 @@ class HelpHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": f"**🚫 Access Denied**\n\nYou are not authorized to use this bot.\n\n**Your ID:** `{context.sender_id}`\n\nPlease contact an administrator for access."
+                        "content": f"**🚫 Access Denied**\n\nYou are not authorized to use this bot.\n\n**Your ID:** **{context.sender_id}**\n\nPlease contact an administrator for access."
                     }
                 }
             ]
