@@ -18,6 +18,12 @@ from bot.services.topic_manager import LarkTopicManager, TopicType
 from bot.utils.handler_registry import HandlerRegistry, CommandContext
 from bot.handlers.help_handler import HelpHandler
 from bot.handlers.start_handler import StartHandler
+from bot.handlers.list_handler import ListHandler
+from bot.handlers.add_handler import AddHandler
+from bot.handlers.remove_handler import RemoveHandler
+from bot.handlers.check_handler import CheckHandler
+from bot.handlers.table_test_handler import TableTestHandler 
+
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +52,17 @@ async def startup_event():
         # Register handlers
         help_handler = HelpHandler()
         start_handler = StartHandler()
+        list_handler = ListHandler()
+        add_handler = AddHandler()
+        remove_handler = RemoveHandler()
+        check_handler = CheckHandler()
+        table_test_handler = TableTestHandler() # <-- ADD THIS LINE
+
+        handler_registry.register(table_test_handler) # <-- ADD THIS LINE
+        handler_registry.register(check_handler)
+        handler_registry.register(remove_handler)
+        handler_registry.register(add_handler)
+        handler_registry.register(list_handler)
         handler_registry.register(help_handler)
         handler_registry.register(start_handler)
         # Add middleware
@@ -65,7 +82,7 @@ async def startup_event():
                 "🔗 Webhook endpoint: /webhook\n"
                 "✅ Ready for real-time interaction!"
             )
-            await topic_manager.send_to_dailyreport(startup_msg)
+            await topic_manager.send_to_commands(startup_msg)
         
     except Exception as e:
         logger.error(f"❌ Startup failed: {e}")
