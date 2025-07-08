@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Lark Bot Configuration Module - FIXED VERSION
+Lark Bot Configuration Module - CLEANED VERSION
 Manages environment variables, validation, and logging setup
 """
 
@@ -35,9 +35,6 @@ class Config:
     LARK_TOPIC_QUICKGUIDE_MSG = os.getenv("LARK_TOPIC_QUICKGUIDE_MSG")
     LARK_TOPIC_COMMANDS_MSG = os.getenv("LARK_TOPIC_COMMANDS_MSG")
     LARK_TOPIC_DAILYREPORT_MSG = os.getenv("LARK_TOPIC_DAILYREPORT_MSG")
-    
-    # Authorization
-    LARK_AUTHORIZED_USERS = os.getenv("LARK_AUTHORIZED_USERS", "").split(",")
     
     # Bot Configuration
     POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "30"))  # seconds
@@ -100,10 +97,6 @@ class Config:
             error_msg = f"Wallets file not found: {wallets_path} (searched: {cls.WALLETS_FILE}, ../../{cls.WALLETS_FILE}, ../{cls.WALLETS_FILE})"
             logging.error(f"❌ Configuration Error: {error_msg}")
             raise FileNotFoundError(error_msg)
-        
-        # Validate authorized users format
-        if cls.LARK_AUTHORIZED_USERS == [""]:
-            logging.warning("⚠️ No authorized users configured - bot will accept commands from anyone")
         
         logging.info("✅ Configuration validation passed")
         return True
@@ -217,7 +210,7 @@ class Config:
     @classmethod
     def get_topic_config(cls) -> Dict[str, Dict[str, str]]:
         """
-        Get topic configuration mapping - FIXED VERSION
+        Get topic configuration mapping.
         
         Returns:
             Dictionary mapping topic names to their IDs and message IDs
@@ -226,36 +219,19 @@ class Config:
             "quickguide": {
                 "thread_id": cls.LARK_TOPIC_QUICKGUIDE,
                 "message_id": cls.LARK_TOPIC_QUICKGUIDE_MSG,
-                "chat_id": cls.LARK_CHAT_ID  # ADDED: This was missing!
+                "chat_id": cls.LARK_CHAT_ID
             },
             "commands": {
                 "thread_id": cls.LARK_TOPIC_COMMANDS,
                 "message_id": cls.LARK_TOPIC_COMMANDS_MSG,
-                "chat_id": cls.LARK_CHAT_ID  # ADDED: This was missing!
+                "chat_id": cls.LARK_CHAT_ID
             },
             "dailyreport": {
                 "thread_id": cls.LARK_TOPIC_DAILYREPORT,
                 "message_id": cls.LARK_TOPIC_DAILYREPORT_MSG,
-                "chat_id": cls.LARK_CHAT_ID  # ADDED: This was missing!
+                "chat_id": cls.LARK_CHAT_ID
             }
         }
-    
-    @classmethod
-    def is_user_authorized(cls, user_id: str) -> bool:
-        """
-        Check if a user is authorized to use the bot.
-        
-        Args:
-            user_id: Lark user ID to check
-            
-        Returns:
-            True if user is authorized, False otherwise
-        """
-        # If no authorized users configured, allow everyone
-        if not cls.LARK_AUTHORIZED_USERS or cls.LARK_AUTHORIZED_USERS == [""]:
-            return True
-        
-        return user_id in cls.LARK_AUTHORIZED_USERS
     
     @classmethod
     def get_config_summary(cls) -> str:
@@ -281,11 +257,8 @@ class Config:
         for name, config in topics.items():
             summary.append(f"  - {name}: thread={config.get('thread_id', 'None')[:10]}..., msg={config.get('message_id', 'None')[:10]}..., chat={config.get('chat_id', 'None')[:10]}...")
         
-        # Authorization
-        if cls.LARK_AUTHORIZED_USERS and cls.LARK_AUTHORIZED_USERS != [""]:
-            summary.append(f"Authorized Users: {len(cls.LARK_AUTHORIZED_USERS)} configured")
-        else:
-            summary.append("Authorized Users: Open access (no restrictions)")
+        # Authorization note
+        summary.append("Authorization: Handled by handler_registry.py (ALLOWED_USERS)")
         
         return "\n".join(summary)
 
@@ -295,7 +268,7 @@ class Config:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-# Testing functions remain the same...
+# Testing functions
 def test_config_validation():
     """Test configuration validation."""
     print("🧪 Testing Configuration Validation...")

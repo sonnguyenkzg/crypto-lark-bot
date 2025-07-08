@@ -134,10 +134,59 @@ class LarkTopicManager:
                 return await self.send_to_topic(TopicType.COMMANDS, fallback_text, "text")
             return False
 
-    async def send_to_dailyreport(self, message: str) -> bool:
-        """Send message to daily report topic."""
-        return await self.send_to_topic(TopicType.DAILYREPORT, message)
-    
+    async def send_to_daily_reports(self, content, msg_type="text"):
+            """
+            Send content to daily reports topic with proper card support.
+            
+            Args:
+                content: Message content (str for text, dict for cards)
+                msg_type: Message type ("text" or "interactive")
+            """
+            try:
+                if msg_type == "interactive" and isinstance(content, dict):
+                    # Send interactive card using the API client's reply method
+                    # Convert card dict to JSON string
+                    card_json = json.dumps(content)
+                    
+                    # Use the API client to send the card
+                    topic_info = self.get_topic_info(TopicType.DAILYREPORT)
+                    message_id = topic_info.get("message_id")
+                    
+                    if not message_id:
+                        logger.error("❌ No message ID configured for daily reports topic")
+                        return False
+                    
+                    response = await self.api_client.reply_to_message(
+                        message_id, 
+                        card_json, 
+                        "interactive"
+                    )
+                    
+                    if response:
+                        logger.info("✅ Interactive card sent to daily reports topic")
+                        return True
+                    else:
+                        logger.error("❌ Failed to send interactive card to daily reports")
+                        return False
+                        
+                else:
+                    # Handle text messages
+                    if isinstance(content, dict):
+                        # Convert dict to text representation as fallback
+                        content = f"📋 **Daily Report Content**\n{str(content)}"
+                    
+                    return await self.send_to_topic(TopicType.DAILYREPORT, str(content), "text")
+                    
+            except Exception as e:
+                logger.error(f"❌ Error in send_to_daily_reports: {e}")
+                # Fallback to text message
+                if isinstance(content, str):
+                    return await self.send_to_topic(TopicType.DAILYREPORT, content, "text")
+                elif isinstance(content, dict):
+                    fallback_text = f"📋 **Daily Report Card**\n{json.dumps(content, indent=2)}"
+                    return await self.send_to_topic(TopicType.DAILYREPORT, fallback_text, "text")
+                return False
+
     def is_topic_message(self, message_thread_id: Optional[str], topic_type: TopicType) -> bool:
         """Check if a message belongs to a specific topic."""
         if not message_thread_id:
