@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
 Real Webhook-Based Lark Bot - Based on Production Architecture
+FIXED: Added message deduplication to prevent duplicate executions
 """
 import asyncio
 import json
 import logging
+import time
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 import uvicorn
@@ -22,12 +24,47 @@ from bot.handlers.list_handler import ListHandler
 from bot.handlers.add_handler import AddHandler
 from bot.handlers.remove_handler import RemoveHandler
 from bot.handlers.check_handler import CheckHandler
-from bot.handlers.table_test_handler import TableTestHandler 
-
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Message deduplication cache - ADDED TO FIX DUPLICATE MESSAGES
+_PROCESSED_MESSAGES = {}
+_MESSAGE_CACHE_TTL = 300  # 5 minutes TTL
+
+def cleanup_message_cache():
+    """Clean old messages from cache"""
+    current_time = time.time()
+    expired_keys = [
+        msg_id for msg_id, timestamp in _PROCESSED_MESSAGES.items()
+        if current_time - timestamp > _MESSAGE_CACHE_TTL
+    ]
+    for key in expired_keys:
+        del _PROCESSED_MESSAGES[key]
+
+def is_duplicate_message(event_id: str, message_id: str, message_content: str) -> bool:
+    """Check if this message was already processed - ENHANCED with multiple keys"""
+    cleanup_message_cache()  # Clean old entries
+    
+    # Create multiple unique keys for better deduplication
+    event_key = f"event:{event_id}"
+    message_key = f"msg:{message_id}"
+    content_key = f"content:{hash(message_content)}"  # Hash of message content
+    
+    # Check all possible duplicate scenarios
+    if (event_key in _PROCESSED_MESSAGES or 
+        message_key in _PROCESSED_MESSAGES or 
+        content_key in _PROCESSED_MESSAGES):
+        return True
+    
+    # Mark all keys as processed
+    current_time = time.time()
+    _PROCESSED_MESSAGES[event_key] = current_time
+    _PROCESSED_MESSAGES[message_key] = current_time
+    _PROCESSED_MESSAGES[content_key] = current_time
+    
+    return False
 
 # Global instances
 api_client = None
@@ -56,9 +93,7 @@ async def startup_event():
         add_handler = AddHandler()
         remove_handler = RemoveHandler()
         check_handler = CheckHandler()
-        table_test_handler = TableTestHandler() # <-- ADD THIS LINE
 
-        handler_registry.register(table_test_handler) # <-- ADD THIS LINE
         handler_registry.register(check_handler)
         handler_registry.register(remove_handler)
         handler_registry.register(add_handler)
@@ -71,18 +106,80 @@ async def startup_event():
         
         logger.info("✅ Lark Bot initialized successfully")
         
-        # Send startup message
+# Send startup message as rich card
         async with api_client:
-            startup_msg = (
-                "🎯 **REAL WEBHOOK BOT STARTED!**\n"
-                f"📅 Started at: {Config.get_current_time() if hasattr(Config, 'get_current_time') else 'Now'}\n"
-                "🎉 **I can now hear your actual /help commands!**\n\n"
-                "💡 **Try typing /help in #commands topic**\n"
-                "⚡ **Instant responses!**\n\n"
-                "🔗 Webhook endpoint: /webhook\n"
-                "✅ Ready for real-time interaction!"
-            )
-            await topic_manager.send_to_commands(startup_msg)
+            startup_card = {
+                "config": {
+                    "wide_screen_mode": True,
+                    "enable_forward": True
+                },
+                "header": {
+                    "template": "green",
+                    "title": {
+                        "tag": "plain_text",
+                        "content": "🎯 Real Webhook Bot Started!"
+                    },
+                    "subtitle": {
+                        "tag": "plain_text",
+                        "content": f"Started at: {Config.get_current_time() if hasattr(Config, 'get_current_time') else 'Now'}"
+                    }
+                },
+                "elements": [
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": "🎉 **I can now hear your actual commands!**"
+                        }
+                    },
+                    {
+                        "tag": "hr"
+                    },
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": "💡 **Try typing /help in #commands topic**"
+                        }
+                    },
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": "⚡ **Instant responses!**"
+                        }
+                    },
+                    {
+                        "tag": "hr"
+                    },
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": "**Available Commands:**"
+                        }
+                    },
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": "• **/help** - Show all commands\n• **/check** - Check wallet balances\n• **/list** - List all wallets\n• **/add** - Add new wallet\n• **/remove** - Remove wallet"
+                        }
+                    },
+                    {
+                        "tag": "hr"
+                    },
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": "🔗 **Webhook endpoint:** /webhook\n✅ **Ready for real-time interaction!**"
+                        }
+                    }
+                ]
+            }
+            
+            await topic_manager.send_command_response(startup_card, msg_type="interactive")
         
     except Exception as e:
         logger.error(f"❌ Startup failed: {e}")
@@ -115,6 +212,9 @@ async def lark_webhook(request: Request):
         event_type = body_json.get("header", {}).get("event_type")
         if event_type == "im.message.receive_v1":
             event = body_json.get("event", {})
+            # IMPORTANT: Pass the header to the event for deduplication
+            event["header"] = body_json.get("header", {})
+            
             await process_message_event(event)
             return JSONResponse({"success": True})
 
@@ -128,9 +228,32 @@ async def lark_webhook(request: Request):
 async def process_message_event(event):
     """Process incoming message event."""
     try:
+        # Get event and message IDs for deduplication - ENHANCED FIX WITH TIMESTAMP
+        header = event.get("header", {})
         message_data = event.get("message", {})
         
-        logger.info(f"📨 Processing message: {json.dumps(message_data, indent=2)[:200]}...")
+        event_id = header.get("event_id", "")
+        message_id = message_data.get("message_id", "")
+        message_content = message_data.get("content", "")
+        message_create_time = int(message_data.get("create_time", "0"))
+        
+        # Check if message is too old (older than 60 seconds)
+        current_time_ms = int(time.time() * 1000)
+        message_age_seconds = (current_time_ms - message_create_time) / 1000
+        
+        logger.info(f"🔍 Checking message: event_id={event_id[:8]}..., message_id={message_id[:10]}..., age={message_age_seconds:.1f}s")
+        
+        # IGNORE OLD MESSAGES (older than 60 seconds)
+        if message_age_seconds > 60:
+            logger.warning(f"🕐 IGNORING OLD MESSAGE - Age: {message_age_seconds:.1f}s (>{60}s)")
+            return
+        
+        # CRITICAL: Enhanced duplicate check with multiple keys
+        if is_duplicate_message(event_id, message_id, message_content):
+            logger.warning(f"🚫 DUPLICATE MESSAGE BLOCKED - event_id: {event_id[:8]}..., message_id: {message_id[:10]}...")
+            return
+        
+        logger.info(f"✅ NEW MESSAGE ACCEPTED - Processing: {json.dumps(message_data, indent=2)[:200]}...")
 
         # Parse message
         message = message_parser.parse_message(event)
