@@ -2,7 +2,7 @@
 """
 Check Handler for Lark Bot - Following Telegram Bot Pattern
 Checks wallet balances with beautiful table format
-FIXED: Continuous calling issue
+FIXED: Table rendering issue - Using formatted text table instead of native table component
 """
 
 import logging
@@ -208,41 +208,66 @@ class CheckHandler:
             _CHECK_EXECUTION_LOCK = False
             logger.info(f"🔓 Check command UNLOCKED - Execution finished for user {context.sender_id}")
 
+    def _create_formatted_table_text(self, balances: Dict[str, Decimal]) -> str:
+        """Create a properly formatted table using fixed-width columns."""
+        
+        # Filter successful balances and sort
+        successful_balances = {name: balance for name, balance in balances.items() if balance is not None}
+        
+        # Sort wallets by group then by name
+        wallet_list = []
+        for wallet_name, balance in successful_balances.items():
+            group = self.balance_service.extract_wallet_group(wallet_name)
+            wallet_list.append((group, wallet_name, balance))
+        
+        wallet_list.sort(key=lambda x: (x[0], x[1]))
+        
+        # Use fixed column widths for better alignment
+        group_width = 8
+        name_width = 20
+        amount_width = 15
+        
+        # Create table header with proper spacing
+        header = f"{'Group':<{group_width}}{'Wallet Name':<{name_width}}{'Amount (USDT)':>{amount_width}}"
+        separator = "=" * len(header)
+        
+        # Build table rows
+        table_lines = [header, separator]
+        
+        for group, wallet_name, balance in wallet_list:
+            # Truncate long names if needed
+            display_name = wallet_name[:name_width-1] if len(wallet_name) >= name_width else wallet_name
+            balance_str = f"{balance:,.2f}"
+            
+            row = f"{group:<{group_width}}{display_name:<{name_width}}{balance_str:>{amount_width}}"
+            table_lines.append(row)
+        
+        # Add separator and total row
+        table_lines.append(separator)
+        grand_total = sum(successful_balances.values())
+        total_str = f"{grand_total:,.2f}"
+        total_row = f"{'TOTAL':<{group_width}}{'':<{name_width}}{total_str:>{amount_width}}"
+        table_lines.append(total_row)
+        
+        return "\n".join(table_lines)
+
     def _create_balance_table_card(self, balances: Dict[str, Decimal], time_str: str, not_found: List[str]) -> dict:
-        """Create the beautiful balance table card matching your screenshot."""
+        """Create table using Lark's column layout for better formatting."""
         
         # Calculate totals
         total_wallets = len(balances)
         successful_balances = {name: balance for name, balance in balances.items() if balance is not None}
         grand_total = sum(successful_balances.values())
         
-        # Build table rows
-        table_rows = []
-        
-        # Sort wallets by group then by name (matching your screenshot)
+        # Sort wallets by group then by name
         wallet_list = []
         for wallet_name, balance in successful_balances.items():
-            if balance is not None:
-                group = self.balance_service.extract_wallet_group(wallet_name)
-                wallet_list.append((group, wallet_name, balance))
+            group = self.balance_service.extract_wallet_group(wallet_name)
+            wallet_list.append((group, wallet_name, balance))
         
-        # Sort by group, then by wallet name
         wallet_list.sort(key=lambda x: (x[0], x[1]))
         
-        # Create table content for the card
-        table_content = "| Group | Wallet Name | Amount (USDT) |\n"
-        table_content += "|-------|-------------|---------------|\n"
-        
-        for group, wallet_name, balance in wallet_list:
-            # Format balance with commas
-            balance_str = f"{balance:,.2f}"
-            table_content += f"| {group} | {wallet_name} | {balance_str} |\n"
-        
-        # Add total row
-        table_content += "|-------|-------------|---------------|\n"
-        table_content += f"| **TOTAL** | | **{grand_total:,.2f}** |"
-        
-        # Build the card elements
+        # Build elements with structured table layout
         elements = [
             # Header info
             {
@@ -267,34 +292,196 @@ class CheckHandler:
                 }
             },
             
-            # Wallet Balances header
+            # Separator
             {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "**Wallet Balances:**"
-                }
+                "tag": "hr"
             },
             
-            # The table
+            # Table header using column layout
             {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": table_content
-                }
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "grey",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "lark_md",
+                                    "content": "**Group**"
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted", 
+                        "weight": 2,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "lark_md",
+                                    "content": "**Wallet Name**"
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "lark_md",
+                                    "content": "**Amount (USDT)**"
+                                }
+                            }
+                        ]
+                    }
+                ]
             }
         ]
         
+        # Add data rows using column layout with right-aligned amounts
+        for group, wallet_name, balance in wallet_list:
+            balance_str = f"{balance:,.2f}"
+            
+            row_element = {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "plain_text",
+                                    "content": group
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 2,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "plain_text",
+                                    "content": wallet_name
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "plain_text",
+                                    "content": balance_str
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+            elements.append(row_element)
+        
+        # Add separator and total row
+        elements.append({
+            "tag": "hr"
+        })
+        
+        # Total row with bold text, no background
+        total_row = {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "vertical_align": "center",
+                    "elements": [
+                        {
+                            "tag": "div",
+                            "text": {
+                                "tag": "lark_md",
+                                "content": "**TOTAL**"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 2,
+                    "vertical_align": "center",
+                    "elements": [
+                        {
+                            "tag": "div",
+                            "text": {
+                                "tag": "plain_text",
+                                "content": ""
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "vertical_align": "center",
+                    "elements": [
+                        {
+                            "tag": "div",
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**{grand_total:,.2f}**"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+        elements.append(total_row)
+        
         # Add not found notice if any
         if not_found:
-            elements.append({
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"❌ **Not found:** {', '.join(not_found)}"
+            elements.extend([
+                {
+                    "tag": "hr"
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"❌ **Not found:** {', '.join(not_found)}"
+                    }
                 }
-            })
+            ])
 
         return {
             "config": {
