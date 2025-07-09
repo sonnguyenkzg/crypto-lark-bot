@@ -5,6 +5,7 @@ Sends automated daily reports at 12:00 AM GMT+7 (midnight)
 Uses the same beautiful table format as /check command
 
 PRODUCTION VERSION: Fixed threading and clean formatting with Lark cards
+FIXED: Group display issue - Now correctly uses company information from wallet data
 """
 
 import asyncio
@@ -50,20 +51,22 @@ class LarkDailyReportScheduler:
             logger.error(f"❌ Failed to initialize Lark client: {e}")
             return False
     
-    def create_daily_report_card(self, balances: Dict[str, Decimal], time_str: str) -> dict:
+    def create_daily_report_card(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str) -> dict:
         """
         Create daily report card using the same beautiful format as CheckHandler.
-        Reuses the exact same styling and layout.
+        FIXED: Now uses actual company information from wallet data.
         """
         # Calculate totals
         total_wallets = len(balances)
         successful_balances = {name: balance for name, balance in balances.items() if balance is not None}
         grand_total = sum(successful_balances.values())
         
-        # Sort wallets by group then by name (same logic as CheckHandler)
+        # Sort wallets by group then by name using the actual wallet data (FIXED)
         wallet_list = []
         for wallet_name, balance in successful_balances.items():
-            group = self.balance_service.extract_wallet_group(wallet_name)
+            # Get the company/group from the wallet data (FIXED)
+            wallet_info = wallets_to_check.get(wallet_name, {})
+            group = wallet_info.get('company', 'Unknown')
             wallet_list.append((group, wallet_name, balance))
         
         wallet_list.sort(key=lambda x: (x[0], x[1]))
@@ -305,22 +308,22 @@ class LarkDailyReportScheduler:
                 logger.warning("No wallets configured for daily report")
                 return
             
-            # Convert wallet list data to flat dictionary (same as CheckHandler)
+            # Convert wallet list data to flat dictionary (same as CheckHandler) - FIXED
             wallet_data = {}
-            for company_wallets in wallet_list_data['companies'].values():
+            for company_name, company_wallets in wallet_list_data['companies'].items():
                 for wallet in company_wallets:
                     wallet_key = f"{wallet['name']}"
                     wallet_data[wallet_key] = {
                         'name': wallet['name'],
                         'address': wallet['address'],
-                        'company': wallet.get('company', 'Unknown')
+                        'company': company_name  # Use the actual company name from the data structure
                     }
             
-            # Prepare wallets for balance checking
-            wallets_to_check = {info['name']: info['address'] for info in wallet_data.values()}
+            # Prepare wallets for balance checking - FIXED to preserve full wallet info
+            address_mapping = {info['name']: info['address'] for info in wallet_data.values()}
             
             # Fetch all balances (same as CheckHandler but synchronous for scheduler)
-            balances = self.balance_service.fetch_multiple_balances(wallets_to_check)
+            balances = self.balance_service.fetch_multiple_balances(address_mapping)
             
             # Filter successful balances
             successful_balances = {name: balance for name, balance in balances.items() if balance is not None}
@@ -333,8 +336,8 @@ class LarkDailyReportScheduler:
             gmt7_time = datetime.now(timezone(timedelta(hours=7)))
             time_str = gmt7_time.strftime('%Y-%m-%d %H:%M')
             
-            # Create daily report card using the same format as CheckHandler
-            report_card = self.create_daily_report_card(successful_balances, time_str)
+            # Create daily report card using the same format as CheckHandler - FIXED
+            report_card = self.create_daily_report_card(successful_balances, wallet_data, time_str)
             
             # Send report to daily reports topic
             async with fresh_api_client:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Real Webhook-Based Lark Bot - Based on Production Architecture
-FIXED: Added message deduplication to prevent duplicate executions
+FIXED: Proper message deduplication that allows repeated commands
 """
 import asyncio
 import json
@@ -29,7 +29,7 @@ from bot.handlers.check_handler import CheckHandler
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Message deduplication cache - ADDED TO FIX DUPLICATE MESSAGES
+# Message deduplication cache - FIXED: Only use unique message identifiers
 _PROCESSED_MESSAGES = {}
 _MESSAGE_CACHE_TTL = 300  # 5 minutes TTL
 
@@ -43,26 +43,26 @@ def cleanup_message_cache():
     for key in expired_keys:
         del _PROCESSED_MESSAGES[key]
 
-def is_duplicate_message(event_id: str, message_id: str, message_content: str) -> bool:
-    """Check if this message was already processed - ENHANCED with multiple keys"""
+def is_duplicate_message(event_id: str, message_id: str) -> bool:
+    """
+    Check if this message was already processed
+    FIXED: Only use unique identifiers (event_id and message_id), NOT content hash
+    This allows repeated commands like /check to work properly
+    """
     cleanup_message_cache()  # Clean old entries
     
-    # Create multiple unique keys for better deduplication
+    # Create unique keys based on message identifiers only
     event_key = f"event:{event_id}"
     message_key = f"msg:{message_id}"
-    content_key = f"content:{hash(message_content)}"  # Hash of message content
     
-    # Check all possible duplicate scenarios
-    if (event_key in _PROCESSED_MESSAGES or 
-        message_key in _PROCESSED_MESSAGES or 
-        content_key in _PROCESSED_MESSAGES):
+    # Check if we've already processed this exact message
+    if event_key in _PROCESSED_MESSAGES or message_key in _PROCESSED_MESSAGES:
         return True
     
-    # Mark all keys as processed
+    # Mark this message as processed
     current_time = time.time()
     _PROCESSED_MESSAGES[event_key] = current_time
     _PROCESSED_MESSAGES[message_key] = current_time
-    _PROCESSED_MESSAGES[content_key] = current_time
     
     return False
 
@@ -100,13 +100,14 @@ async def startup_event():
         handler_registry.register(list_handler)
         handler_registry.register(help_handler)
         handler_registry.register(start_handler)
+        
         # Add middleware
         from bot.utils.handler_registry import authorization_middleware
         handler_registry.add_middleware(authorization_middleware)
         
         logger.info("✅ Lark Bot initialized successfully")
         
-# Send startup message as rich card
+        # Send startup message as rich card
         async with api_client:
             startup_card = {
                 "config": {
@@ -228,7 +229,7 @@ async def lark_webhook(request: Request):
 async def process_message_event(event):
     """Process incoming message event."""
     try:
-        # Get event and message IDs for deduplication - ENHANCED FIX WITH TIMESTAMP
+        # Get event and message IDs for deduplication
         header = event.get("header", {})
         message_data = event.get("message", {})
         
@@ -248,8 +249,8 @@ async def process_message_event(event):
             logger.warning(f"🕐 IGNORING OLD MESSAGE - Age: {message_age_seconds:.1f}s (>{60}s)")
             return
         
-        # CRITICAL: Enhanced duplicate check with multiple keys
-        if is_duplicate_message(event_id, message_id, message_content):
+        # FIXED: Only check for actual duplicate messages, not content duplicates
+        if is_duplicate_message(event_id, message_id):
             logger.warning(f"🚫 DUPLICATE MESSAGE BLOCKED - event_id: {event_id[:8]}..., message_id: {message_id[:10]}...")
             return
         
