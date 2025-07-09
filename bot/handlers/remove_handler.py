@@ -2,6 +2,7 @@
 """
 Remove Handler for Lark Bot - Following Telegram Bot Pattern
 Removes wallets with single quoted argument parsing
+FIXED: Now accepts both wallet names and TRON addresses
 """
 
 import logging
@@ -9,17 +10,19 @@ import re
 from typing import Any, Tuple, Union
 
 from bot.services.wallet_service import WalletService
+from bot.services.balance_service import BalanceService
 
 logger = logging.getLogger(__name__)
 
 class RemoveHandler:
     def __init__(self):
         self.name = "remove"
-        self.description = "Remove a wallet (requires 1 quoted wallet name)"
-        self.usage = '/remove "wallet_name"'
+        self.description = "Remove a wallet (requires 1 quoted wallet name or address)"
+        self.usage = '/remove "wallet_name_or_address"'
         self.aliases = ["delete", "del"]
         self.enabled = True
         self.wallet_service = WalletService()
+        self.balance_service = BalanceService()  # For address validation
 
     def extract_quoted_strings(self, text: str) -> list:
         """Extract quoted strings from text."""
@@ -30,16 +33,16 @@ class RemoveHandler:
     def parse_single_quoted_argument(self, text: str) -> Tuple[bool, Union[str, str]]:
         """
         Parse text with single quoted argument.
-        Expects exactly 1 quoted string: "wallet_name"
+        Expects exactly 1 quoted string: "wallet_name_or_address"
         
         Args:
             text: Command text from user
             
         Returns:
-            Tuple[bool, Union[str, str]]: (success, wallet_name or error_message)
+            Tuple[bool, Union[str, str]]: (success, wallet_identifier or error_message)
         """
         if not text or not text.strip():
-            return False, "❌ Missing wallet name"
+            return False, "❌ Missing wallet name or address"
         
         # Extract quoted strings
         matches = self.extract_quoted_strings(text)
@@ -47,13 +50,57 @@ class RemoveHandler:
         if len(matches) != 1:
             return False, f"❌ Expected 1 quoted argument, found {len(matches)}"
         
-        wallet_name = matches[0].strip()
+        wallet_identifier = matches[0].strip()
         
-        # Validate wallet name is not empty
-        if not wallet_name:
-            return False, "❌ Wallet name cannot be empty"
+        # Validate wallet identifier is not empty
+        if not wallet_identifier:
+            return False, "❌ Wallet name or address cannot be empty"
         
-        return True, wallet_name
+        return True, wallet_identifier
+
+    def find_wallet_by_identifier(self, identifier: str) -> Tuple[bool, Union[dict, str]]:
+        """
+        Find wallet by name or address.
+        
+        Args:
+            identifier: Wallet name or TRON address
+            
+        Returns:
+            Tuple[bool, Union[dict, str]]: (found, wallet_info or error_message)
+        """
+        try:
+            # First, try to get wallet by name (existing functionality)
+            wallet_exists, wallet_info = self.wallet_service.get_wallet(identifier)
+            
+            if wallet_exists:
+                return True, wallet_info
+            
+            # Check if identifier is a valid TRON address
+            if self.balance_service.validate_trc20_address(identifier):
+                # It's a valid address, search through all wallets to find it
+                success, wallet_data = self.wallet_service.list_wallets()
+                
+                if success and 'companies' in wallet_data:
+                    for company_name, company_wallets in wallet_data['companies'].items():
+                        for wallet in company_wallets:
+                            if wallet['address'].lower() == identifier.lower():
+                                # Found wallet with matching address
+                                wallet_info = {
+                                    'name': wallet['name'],
+                                    'address': wallet['address'],
+                                    'company': company_name
+                                }
+                                return True, wallet_info
+                
+                # Valid address but not found in our wallets
+                return False, f"❌ TRON address '{identifier[:10]}...{identifier[-6:]}' not found in wallet list"
+            
+            # Not a valid address and not found by name
+            return False, f"❌ Wallet '{identifier}' not found"
+            
+        except Exception as e:
+            logger.error(f"Error finding wallet by identifier '{identifier}': {e}")
+            return False, f"❌ Error searching for wallet: {str(e)}"
 
     async def handle(self, context: Any) -> bool:
         try:
@@ -83,26 +130,30 @@ class RemoveHandler:
                 logger.warning(f"Remove command failed for user {user_id}: {error_message}")
                 return False
 
-            wallet_name = result
+            wallet_identifier = result
 
-            # Check if wallet exists before attempting removal
-            wallet_exists, wallet_info = self.wallet_service.get_wallet(wallet_name)
+            # Find wallet by name or address
+            found, result = self.find_wallet_by_identifier(wallet_identifier)
             
-            if not wallet_exists:
+            if not found:
+                error_message = result
                 # Create not found error with suggestions
-                not_found_card = self._create_not_found_card(wallet_name)
+                not_found_card = self._create_not_found_card(wallet_identifier, error_message)
                 await context.topic_manager.send_command_response(not_found_card, msg_type="interactive")
-                logger.warning(f"Remove failed - wallet '{wallet_name}' not found for user {user_id}")
+                logger.warning(f"Remove failed - {error_message} for user {user_id}")
                 return False
 
-            # Attempt to remove wallet using wallet service
+            wallet_info = result
+            wallet_name = wallet_info['name']
+
+            # Attempt to remove wallet using wallet service (by name)
             success, message = self.wallet_service.remove_wallet(wallet_name)
             
             if success:
-                # Create success card matching your screenshot
-                success_card = self._create_success_card(wallet_name, wallet_info)
+                # Create success card
+                success_card = self._create_success_card(wallet_name, wallet_info, wallet_identifier)
                 await context.topic_manager.send_command_response(success_card, msg_type="interactive")
-                logger.info(f"Wallet '{wallet_name}' removed successfully by user {user_id}")
+                logger.info(f"Wallet '{wallet_name}' removed successfully by user {user_id} (identifier: '{wallet_identifier}')")
             else:
                 # Send error message from wallet service
                 error_card = self._create_error_card(message)
@@ -118,9 +169,13 @@ class RemoveHandler:
             await context.topic_manager.send_command_response(fallback_message)
             return False
 
-    def _create_success_card(self, wallet_name: str, wallet_info: dict) -> dict:
-        """Create success card matching your screenshot format."""
+    def _create_success_card(self, wallet_name: str, wallet_info: dict, original_identifier: str) -> dict:
+        """Create success card with information about what was removed."""
         company = wallet_info.get('company', 'Unknown')
+        wallet_address = wallet_info.get('address', 'Unknown')
+        
+        # Show what identifier was used
+        identifier_type = "address" if self.balance_service.validate_trc20_address(original_identifier) else "name"
         
         return {
             "config": {
@@ -147,15 +202,19 @@ class RemoveHandler:
                 # Wallet details
                 {
                     "tag": "div",
-                    "fields": [
-                        {
-                            "is_short": False,
-                            "text": {
-                                "tag": "lark_md",
-                                "content": f"**Wallet:** {wallet_name}\n**Company:** {company}"
-                            }
-                        }
-                    ]
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"📋 **Details:**\n• **Company:** {company}\n• **Wallet:** {wallet_name}\n• **Address:** {wallet_address[:10]}...{wallet_address[-6:]}"
+                    }
+                },
+                
+                # Show how it was identified
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"🔍 **Removed by:** {identifier_type}"
+                    }
                 },
                 
                 # Confirmation message
@@ -178,7 +237,7 @@ class RemoveHandler:
             ]
         }
 
-    def _create_not_found_card(self, wallet_name: str) -> dict:
+    def _create_not_found_card(self, identifier: str, error_message: str) -> dict:
         """Create not found error with helpful suggestions."""
         # Get all wallets to suggest similar names
         try:
@@ -191,20 +250,22 @@ class RemoveHandler:
                     for wallet in company_wallets:
                         all_wallet_names.append(wallet['name'])
                 
-                # Find similar names
-                similar_names = [name for name in all_wallet_names 
-                               if wallet_name.lower() in name.lower()][:3]
+                # Find similar names (only for name searches, not addresses)
+                if not self.balance_service.validate_trc20_address(identifier):
+                    similar_names = [name for name in all_wallet_names 
+                                   if identifier.lower() in name.lower()][:3]
         except:
             similar_names = []
 
         # Build error message
-        error_content = f"❌ **Wallet '{wallet_name}' not found**"
+        error_content = error_message
         
         if similar_names:
             suggestions = "`, `".join(similar_names)
             error_content += f"\n\n💡 **Did you mean:** `{suggestions}`"
         
         error_content += "\n\n📋 Use **/list** to see all available wallets"
+        error_content += "\n\n💡 **Tip:** You can remove by wallet name or TRON address"
 
         return {
             "config": {
@@ -248,21 +309,21 @@ class RemoveHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "❌ **Missing wallet name**"
+                        "content": "❌ **Missing wallet identifier**"
                     }
                 },
                 {
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Usage:** `/remove \"wallet_name\"`"
+                        "content": "**Usage:** `/remove \"wallet_name_or_address\"`"
                     }
                 },
                 {
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Example:** `/remove \"KZP TEST1\"`"
+                        "content": "**Examples:**\n• `/remove \"KZP TEST1\"` (by name)\n• `/remove \"TDgWVGJKktTMaGt9fLJhTr7PHY3hEfk6BU\"` (by address)"
                     }
                 },
                 {
@@ -304,14 +365,14 @@ class RemoveHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Usage:** `/remove \"wallet_name\"`"
+                        "content": "**Usage:** `/remove \"wallet_name_or_address\"`"
                     }
                 },
                 {
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Example:** `/remove \"KZP TEST1\"`"
+                        "content": "**Examples:**\n• `/remove \"KZP TEST1\"` (by name)\n• `/remove \"TDgWVGJKktTMaGt9fLJhTr7PHY3hEfk6BU\"` (by address)"
                     }
                 },
                 {

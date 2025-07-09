@@ -2,6 +2,7 @@
 """
 Lark Bot Handler Registry Module
 Routes commands to appropriate handlers and manages command execution
+FIXED: Unknown command now shows as rich card instead of plain text
 """
 
 import logging
@@ -131,24 +132,200 @@ class HandlerRegistry:
             await self._send_error_message(context, str(e))
             return False
 
+    def _create_unknown_command_card(self, command: str, available_commands: List[str]) -> dict:
+        """Create rich card for unknown command error."""
+        commands_list = ", ".join([f"/{cmd}" for cmd in sorted(available_commands)])
+        
+        return {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": True
+            },
+            "header": {
+                "template": "orange",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "❓ Unknown Command"
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"❓ **Unknown command: /{command}**"
+                    }
+                },
+                {
+                    "tag": "hr"
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"**Available commands:** {commands_list}"
+                    }
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "Use **/help** for detailed information."
+                    }
+                }
+            ]
+        }
+
+    def _create_error_card(self, command: str, error: str) -> dict:
+        """Create rich card for command execution errors."""
+        return {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": False
+            },
+            "header": {
+                "template": "red",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "💥 Command Error"
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "💥 **Command Error**"
+                    }
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"**Command:** /{command}\n**Error:** {error}"
+                    }
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "Please try again or contact support if the issue persists."
+                    }
+                }
+            ]
+        }
+
+    def _create_authorization_error_card(self) -> dict:
+        """Create rich card for authorization errors."""
+        return {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": False
+            },
+            "header": {
+                "template": "red",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "🚫 Access Denied"
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "🚫 **Access Denied**"
+                    }
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "You are not authorized to use this bot."
+                    }
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "Please contact an administrator for access."
+                    }
+                }
+            ]
+        }
+
+    def _create_rate_limit_card(self, max_commands: int, time_window: int) -> dict:
+        """Create rich card for rate limit errors."""
+        return {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": False
+            },
+            "header": {
+                "template": "orange",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "⏰ Rate Limit Exceeded"
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "⏰ **Rate Limit Exceeded**"
+                    }
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"Maximum {max_commands} commands per {time_window} seconds."
+                    }
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "Please wait before sending more commands."
+                    }
+                }
+            ]
+        }
+
     async def _send_unknown_command_message(self, context: CommandContext) -> None:
+        """FIXED: Send unknown command message as rich card instead of plain text."""
         try:
-            available_commands = ", ".join([f"/{cmd}" for cmd in sorted(self.list_commands())])
-            error_msg = (
-                f"❓ **Unknown command: /{context.command}**\n\n"
-                f"Available commands: {available_commands}\n\n"
-                f"Use `/help` for detailed information."
-            )
-            await context.topic_manager.send_command_response(error_msg)
+            available_commands = self.list_commands()
+            unknown_card = self._create_unknown_command_card(context.command, available_commands)
+            await context.topic_manager.send_command_response(unknown_card, msg_type="interactive")
         except Exception as e:
             logger.error(f"❌ Error sending unknown command message: {e}")
+            # Fallback to plain text if card fails
+            try:
+                available_commands = ", ".join([f"/{cmd}" for cmd in sorted(self.list_commands())])
+                error_msg = (
+                    f"❓ **Unknown command: /{context.command}**\n\n"
+                    f"Available commands: {available_commands}\n\n"
+                    f"Use `/help` for detailed information."
+                )
+                await context.topic_manager.send_command_response(error_msg)
+            except Exception as fallback_error:
+                logger.error(f"❌ Error sending fallback message: {fallback_error}")
 
     async def _send_error_message(self, context: CommandContext, error: str) -> None:
+        """FIXED: Send error message as rich card instead of plain text."""
         try:
-            error_msg = f"💥 **Command Error**\nCommand: /{context.command}\nError: {error}"
-            await context.topic_manager.send_error_message(error_msg)
+            error_card = self._create_error_card(context.command, error)
+            await context.topic_manager.send_command_response(error_card, msg_type="interactive")
         except Exception as e:
-            logger.error(f"❌ Error sending error message: {e}")
+            logger.error(f"❌ Error sending error card: {e}")
+            # Fallback to plain text if card fails
+            try:
+                error_msg = f"💥 **Command Error**\nCommand: /{context.command}\nError: {error}"
+                await context.topic_manager.send_command_response(error_msg)
+            except Exception as fallback_error:
+                logger.error(f"❌ Error sending fallback error message: {fallback_error}")
 
     def get_help_text(self, command_name: Optional[str] = None) -> str:
         if command_name:
@@ -164,25 +341,57 @@ class HandlerRegistry:
             help_sections.append("")
         return "\n".join(help_sections)
 
-# Authorization middleware using .env
+# FIXED: Authorization middleware now uses rich cards
 async def authorization_middleware(context: CommandContext) -> bool:
     allowed_ids = os.getenv("ALLOWED_USERS", "")
     allowed_set = set(uid.strip() for uid in allowed_ids.split(",") if uid.strip())
     if context.sender_id not in allowed_set:
         logger.warning(f"🚫 Unauthorized command attempt: {context.command} by {context.sender_id}")
         try:
-            error_msg = (
-                "🚫 **Access Denied**\n"
-                "You are not authorized to use this bot.\n"
-                "Please contact an administrator for access."
-            )
-            await context.topic_manager.send_error_message(error_msg)
+            # Create authorization error card
+            auth_error_card = {
+                "config": {
+                    "wide_screen_mode": True,
+                    "enable_forward": False
+                },
+                "header": {
+                    "template": "red",
+                    "title": {
+                        "tag": "plain_text",
+                        "content": "🚫 Access Denied"
+                    }
+                },
+                "elements": [
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": "🚫 **Access Denied**"
+                        }
+                    },
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": "You are not authorized to use this bot."
+                        }
+                    },
+                    {
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": "Please contact an administrator for access."
+                        }
+                    }
+                ]
+            }
+            await context.topic_manager.send_command_response(auth_error_card, msg_type="interactive")
         except Exception as e:
             logger.error(f"❌ Error sending authorization error: {e}")
         return False
     return True
 
-# Optional: Rate limiter middleware
+# Optional: Rate limiter middleware with rich cards
 class RateLimiter:
     def __init__(self, max_commands: int = 10, time_window: int = 60):
         self.max_commands = max_commands
@@ -202,12 +411,44 @@ class RateLimiter:
         if len(self.user_commands[user_id]) >= self.max_commands:
             logger.warning(f"🚫 Rate limit exceeded: {context.command} by {user_id}")
             try:
-                error_msg = (
-                    f"⏰ **Rate Limit Exceeded**\n"
-                    f"Maximum {self.max_commands} commands per {self.time_window} seconds.\n"
-                    f"Please wait before sending more commands."
-                )
-                await context.topic_manager.send_error_message(error_msg)
+                # FIXED: Rate limit error as rich card
+                rate_limit_card = {
+                    "config": {
+                        "wide_screen_mode": True,
+                        "enable_forward": False
+                    },
+                    "header": {
+                        "template": "orange",
+                        "title": {
+                            "tag": "plain_text",
+                            "content": "⏰ Rate Limit Exceeded"
+                        }
+                    },
+                    "elements": [
+                        {
+                            "tag": "div",
+                            "text": {
+                                "tag": "lark_md",
+                                "content": "⏰ **Rate Limit Exceeded**"
+                            }
+                        },
+                        {
+                            "tag": "div",
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"Maximum {self.max_commands} commands per {self.time_window} seconds."
+                            }
+                        },
+                        {
+                            "tag": "div",
+                            "text": {
+                                "tag": "lark_md",
+                                "content": "Please wait before sending more commands."
+                            }
+                        }
+                    ]
+                }
+                await context.topic_manager.send_command_response(rate_limit_card, msg_type="interactive")
             except Exception as e:
                 logger.error(f"❌ Error sending rate limit error: {e}")
             return False
