@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Lark Bot Configuration Module - CLEANED VERSION
-Manages environment variables, validation, and logging setup
+Lark Bot Configuration Module - PRODUCTION-SAFE VERSION
+Manages environment variables, validation, and production-safe logging setup
 """
 
 import os
 import logging
+import logging.handlers
 import json
+import glob
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -44,6 +46,9 @@ class Config:
     WALLETS_FILE = os.getenv("WALLETS_FILE", "wallets.json")
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     
+    # API Configuration
+    TRON_API_KEY = os.getenv("TRON_API_KEY")  # For wallet balance checking
+    
     @classmethod
     def _find_wallets_file(cls) -> str:
         """Find wallets.json file in current directory or project root."""
@@ -59,9 +64,6 @@ class Config:
         
         # If not found, return the default
         return cls.WALLETS_FILE
-    
-    # API Configuration
-    TRON_API_KEY = os.getenv("TRON_API_KEY")  # For wallet balance checking
     
     @classmethod
     def validate_config(cls) -> bool:
@@ -163,7 +165,7 @@ class Config:
     @classmethod
     def setup_logging(cls) -> logging.Logger:
         """
-        Setup logging configuration.
+        Setup production-safe logging with automatic rotation and cleanup.
         
         Returns:
             Configured logger instance
@@ -175,7 +177,7 @@ class Config:
         # Configure logging level
         log_level = getattr(logging, cls.LOG_LEVEL.upper(), logging.INFO)
         
-        # Create formatter
+        # Create production-safe formatter
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
@@ -185,27 +187,143 @@ class Config:
         root_logger = logging.getLogger()
         root_logger.setLevel(log_level)
         
-        # Clear existing handlers
+        # Clear existing handlers to avoid duplicates
         root_logger.handlers.clear()
         
-        # Console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(log_level)
-        console_handler.setFormatter(formatter)
-        root_logger.addHandler(console_handler)
+        # 1. Console handler (only in development)
+        environment = cls.ENVIRONMENT.upper()
+        if environment in ["DEV", "DEVELOPMENT", "DEBUG"]:
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(log_level)
+            console_handler.setFormatter(formatter)
+            root_logger.addHandler(console_handler)
         
-        # File handler
-        log_file = logs_dir / f"lark_bot_{datetime.now().strftime('%Y%m%d')}.log"
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(log_level)
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
+        # 2. Main rotating file handler (production-safe)
+        log_file = logs_dir / "lark_bot.log"
+        
+        # Production settings: 5MB per file, 20 backups = max 100MB total
+        main_handler = logging.handlers.RotatingFileHandler(
+            filename=log_file,
+            maxBytes=5 * 1024 * 1024,  # 5MB per file
+            backupCount=20,            # Keep 20 backup files (5MB x 20 = 100MB max)
+            encoding='utf-8'
+        )
+        main_handler.setLevel(log_level)
+        main_handler.setFormatter(formatter)
+        root_logger.addHandler(main_handler)
+        
+        # 3. Error-only file handler (for critical issues)
+        error_log_file = logs_dir / "lark_bot_errors.log"
+        error_handler = logging.handlers.RotatingFileHandler(
+            filename=error_log_file,
+            maxBytes=2 * 1024 * 1024,  # 2MB for errors
+            backupCount=5,             # Keep 5 error log backups (2MB x 5 = 10MB max)
+            encoding='utf-8'
+        )
+        error_handler.setLevel(logging.ERROR)
+        error_handler.setFormatter(formatter)
+        root_logger.addHandler(error_handler)
+        
+        # 4. Cleanup old log files on startup
+        cls._cleanup_old_logs(logs_dir)
         
         # Create bot-specific logger
         logger = logging.getLogger("lark_bot")
-        logger.info(f"🔧 Logging initialized - Level: {cls.LOG_LEVEL}, File: {log_file}")
+        logger.info(f"🔧 Production-safe logging initialized:")
+        logger.info(f"   Environment: {environment}")
+        logger.info(f"   Log Level: {cls.LOG_LEVEL}")
+        logger.info(f"   Main Log: {log_file} (5MB x 20 files = 100MB max)")
+        logger.info(f"   Error Log: {error_log_file} (2MB x 5 files = 10MB max)")
+        logger.info(f"   Total Limit: ~110MB maximum")
         
         return logger
+    
+    @classmethod
+    def _cleanup_old_logs(cls, logs_dir: Path):
+        """
+        Clean up old log files to prevent disk space issues.
+        
+        Args:
+            logs_dir: Directory containing log files
+        """
+        try:
+            # Delete files older than 30 days
+            cutoff_date = datetime.now() - timedelta(days=30)
+            old_files_deleted = 0
+            
+            # Find all log files (including old daily files and backups)
+            log_patterns = [
+                "lark_bot_*.log*",  # Old daily files
+                "*.log.*",          # Rotated backup files
+                "*.backup.*"        # Backup files
+            ]
+            
+            for pattern in log_patterns:
+                for log_file in logs_dir.glob(pattern):
+                    if log_file.is_file():
+                        try:
+                            file_time = datetime.fromtimestamp(log_file.stat().st_mtime)
+                            if file_time < cutoff_date:
+                                log_file.unlink()
+                                old_files_deleted += 1
+                        except Exception as e:
+                            logging.warning(f"⚠️ Could not delete old log file {log_file}: {e}")
+            
+            if old_files_deleted > 0:
+                logging.info(f"🗑️ Cleaned up {old_files_deleted} old log files")
+            
+            # Check and report current log directory size
+            total_size = cls._get_directory_size(logs_dir)
+            total_size_mb = total_size / (1024 * 1024)
+            logging.info(f"📊 Log directory size: {total_size_mb:.1f}MB")
+            
+        except Exception as e:
+            logging.error(f"❌ Error during log cleanup: {e}")
+    
+    @classmethod
+    def _get_directory_size(cls, directory: Path) -> int:
+        """Get total size of directory in bytes."""
+        total_size = 0
+        try:
+            for file_path in directory.rglob('*'):
+                if file_path.is_file():
+                    total_size += file_path.stat().st_size
+        except Exception as e:
+            logging.warning(f"⚠️ Error calculating directory size: {e}")
+        return total_size
+    
+    @classmethod
+    def get_log_status(cls) -> Dict[str, Any]:
+        """Get current logging status and statistics."""
+        logs_dir = Path("logs")
+        
+        if not logs_dir.exists():
+            return {"status": "No logs directory found"}
+        
+        # Count files and calculate sizes
+        log_files = list(logs_dir.glob("*.log*"))
+        total_files = len(log_files)
+        total_size = cls._get_directory_size(logs_dir)
+        total_size_mb = total_size / (1024 * 1024)
+        
+        # Find newest and oldest files
+        newest_file = None
+        oldest_file = None
+        if log_files:
+            files_with_time = [(f.stat().st_mtime, f) for f in log_files]
+            files_with_time.sort(key=lambda x: x[0])
+            oldest_file = files_with_time[0][1].name
+            newest_file = files_with_time[-1][1].name
+        
+        return {
+            "status": "Active",
+            "total_files": total_files,
+            "total_size_mb": round(total_size_mb, 2),
+            "oldest_file": oldest_file,
+            "newest_file": newest_file,
+            "directory": str(logs_dir.absolute()),
+            "limit_mb": 110  # 100MB main + 10MB errors
+        }
     
     @classmethod
     def get_topic_config(cls) -> Dict[str, Dict[str, str]]:
@@ -250,6 +368,10 @@ class Config:
         summary.append(f"Command Prefix: {cls.COMMAND_PREFIX}")
         summary.append(f"Wallets File: {cls.WALLETS_FILE}")
         summary.append(f"Log Level: {cls.LOG_LEVEL}")
+        
+        # Logging info
+        log_status = cls.get_log_status()
+        summary.append(f"Logging: {log_status.get('total_size_mb', 0):.1f}MB / {log_status.get('limit_mb', 110)}MB limit")
         
         # Topic configuration
         topics = cls.get_topic_config()
@@ -304,12 +426,19 @@ def test_wallets_loading():
 
 def test_logging_setup():
     """Test logging setup."""
-    print("🧪 Testing Logging Setup...")
+    print("🧪 Testing Production-Safe Logging Setup...")
     
     try:
         logger = Config.setup_logging()
         logger.info("Test log message")
-        print("✅ Logging setup successful")
+        
+        # Test log status
+        status = Config.get_log_status()
+        print(f"   Log Status: {status.get('status')}")
+        print(f"   Total Files: {status.get('total_files')}")
+        print(f"   Directory Size: {status.get('total_size_mb')}MB / {status.get('limit_mb')}MB")
+        
+        print("✅ Production-safe logging setup successful")
         return True
     except Exception as e:
         print(f"❌ Logging setup failed: {e}")
@@ -340,6 +469,29 @@ def test_topic_config():
         print(f"❌ Topic configuration failed: {e}")
         return False
 
+def monitor_log_health():
+    """Monitor log health and show statistics."""
+    status = Config.get_log_status()
+    
+    print("📊 Log Health Monitor:")
+    print(f"   Status: {status.get('status')}")
+    print(f"   Total Files: {status.get('total_files')}")
+    print(f"   Total Size: {status.get('total_size_mb')}MB / {status.get('limit_mb')}MB")
+    print(f"   Oldest File: {status.get('oldest_file')}")
+    print(f"   Newest File: {status.get('newest_file')}")
+    print(f"   Directory: {status.get('directory')}")
+    
+    # Health check
+    size_mb = status.get('total_size_mb', 0)
+    limit_mb = status.get('limit_mb', 110)
+    
+    if size_mb > limit_mb * 0.9:  # More than 90% of limit
+        print("⚠️ WARNING: Log directory is near the limit!")
+    elif size_mb > limit_mb * 0.5:  # More than 50% of limit
+        print("💡 INFO: Log directory size is moderate")
+    else:
+        print("✅ Log directory size is healthy")
+
 def run_all_tests():
     """Run all configuration tests."""
     print("🚀 Running Configuration Module Tests...")
@@ -367,23 +519,38 @@ def run_all_tests():
     
     if passed == total:
         print("🎉 All tests passed! Configuration module is ready.")
-        print("\n💡 Next steps:")
-        print("1. Create .env file with your Lark configuration")
-        print("2. Ensure wallets.json is properly formatted")
-        print("3. Run this script to validate your setup")
+        print("\n💡 Production-Safe Logging Features:")
+        print("   • Automatic log rotation (5MB per file)")
+        print("   • Maximum 100MB total size (20 backups)")
+        print("   • Separate error logs (10MB max)")
+        print("   • Auto-cleanup of files older than 30 days")
+        print("   • Console logging only in development")
+        print("\n🔧 Next steps:")
+        print("   1. Set ENVIRONMENT=PRODUCTION for production")
+        print("   2. Monitor with: python config.py status")
     else:
         print("❌ Some tests failed. Please check configuration.")
         
     return passed == total
 
 if __name__ == "__main__":
-    # Show configuration summary
-    try:
-        print(Config.get_config_summary())
-        print()
-    except:
-        print("⚠️ Could not load configuration summary")
-        print()
+    import sys
     
-    # Run tests
-    run_all_tests()
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "status":
+            monitor_log_health()
+        elif sys.argv[1] == "test":
+            run_all_tests()
+        else:
+            print("Usage: python config.py [status|test]")
+    else:
+        # Show configuration summary
+        try:
+            print(Config.get_config_summary())
+            print()
+        except:
+            print("⚠️ Could not load configuration summary")
+            print()
+        
+        # Run tests
+        run_all_tests()

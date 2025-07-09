@@ -2,7 +2,7 @@
 """
 Check Handler for Lark Bot - Following Telegram Bot Pattern
 Checks wallet balances with beautiful table format
-FIXED: Table rendering issue - Using formatted text table instead of native table component
+FIXED: Group display issue - Now correctly uses company information from wallet data
 """
 
 import logging
@@ -53,9 +53,9 @@ class CheckHandler:
         
         return quoted_inputs
 
-    def resolve_wallets_to_check(self, inputs: List[str], wallet_data: Dict) -> Tuple[Dict[str, str], List[str]]:
+    def resolve_wallets_to_check(self, inputs: List[str], wallet_data: Dict) -> Tuple[Dict[str, Dict], List[str]]:
         """
-        Resolve input arguments to {display_name: address} mapping.
+        Resolve input arguments to {display_name: wallet_info} mapping.
         
         Args:
             inputs: List of wallet names or addresses from user
@@ -78,15 +78,18 @@ class CheckHandler:
                 found_wallet = False
                 for wallet_key, wallet_info in wallet_data.items():
                     if wallet_info['address'].lower() == input_str.lower():
-                        wallet_name = wallet_info.get('name', wallet_key)
-                        wallets_to_check[wallet_name] = wallet_info['address']
+                        wallets_to_check[wallet_info['name']] = wallet_info
                         found_wallet = True
                         break
                 
                 if not found_wallet:
                     # Address not in our list - still check it
                     display_name = f"External: {input_str[:10]}...{input_str[-6:]}"
-                    wallets_to_check[display_name] = input_str
+                    wallets_to_check[display_name] = {
+                        'name': display_name,
+                        'address': input_str,
+                        'company': 'External'
+                    }
             
             else:
                 # It's a wallet name - find the address (case-insensitive)
@@ -94,7 +97,7 @@ class CheckHandler:
                 for wallet_key, wallet_info in wallet_data.items():
                     wallet_name = wallet_info.get('name', wallet_key)
                     if wallet_name.lower() == input_str.lower():
-                        wallets_to_check[wallet_name] = wallet_info['address']
+                        wallets_to_check[wallet_name] = wallet_info
                         found_wallet = True
                         break
                 
@@ -135,21 +138,21 @@ class CheckHandler:
 
             # Convert wallet list data to flat dictionary for easier processing
             wallet_data = {}
-            for company_wallets in wallet_list_data['companies'].values():
+            for company_name, company_wallets in wallet_list_data['companies'].items():
                 for wallet in company_wallets:
                     wallet_key = f"{wallet['name']}"
                     wallet_data[wallet_key] = {
                         'name': wallet['name'],
                         'address': wallet['address'],
-                        'company': wallet.get('company', 'Unknown')
+                        'company': company_name  # Use the actual company name from the data structure
                     }
 
             # Parse inputs from command arguments
             inputs = self.parse_check_arguments(command_args)
             
             if not inputs:
-                # Check all wallets
-                wallets_to_check = {info['name']: info['address'] for info in wallet_data.values()}
+                # Check all wallets - return full wallet info
+                wallets_to_check = {info['name']: info for info in wallet_data.values()}
                 not_found = []
             else:
                 # Resolve inputs to wallets
@@ -165,13 +168,16 @@ class CheckHandler:
             checking_card = self._create_checking_card(len(wallets_to_check))
             await context.topic_manager.send_command_response(checking_card, msg_type="interactive")
 
+            # Create address mapping for balance service
+            address_mapping = {name: info['address'] for name, info in wallets_to_check.items()}
+
             # Fetch balances with timeout to prevent hanging
             logger.info(f"Fetching balances for {len(wallets_to_check)} wallets...")
             
             try:
                 # Use asyncio.to_thread with timeout to prevent hanging
                 balances = await asyncio.wait_for(
-                    asyncio.to_thread(self.balance_service.fetch_multiple_balances, wallets_to_check),
+                    asyncio.to_thread(self.balance_service.fetch_multiple_balances, address_mapping),
                     timeout=30.0  # 30 second timeout
                 )
             except asyncio.TimeoutError:
@@ -190,7 +196,7 @@ class CheckHandler:
 
             # Create the beautiful table card matching your screenshot
             time_str = self.balance_service.get_current_gmt_time()
-            table_card = self._create_balance_table_card(balances, time_str, not_found)
+            table_card = self._create_balance_table_card(balances, wallets_to_check, time_str, not_found)
             await context.topic_manager.send_command_response(table_card, msg_type="interactive")
 
             logger.info(f"✅ Check command completed for user: {user_id}, {successful_checks}/{len(wallets_to_check)} successful")
@@ -208,50 +214,7 @@ class CheckHandler:
             _CHECK_EXECUTION_LOCK = False
             logger.info(f"🔓 Check command UNLOCKED - Execution finished for user {context.sender_id}")
 
-    def _create_formatted_table_text(self, balances: Dict[str, Decimal]) -> str:
-        """Create a properly formatted table using fixed-width columns."""
-        
-        # Filter successful balances and sort
-        successful_balances = {name: balance for name, balance in balances.items() if balance is not None}
-        
-        # Sort wallets by group then by name
-        wallet_list = []
-        for wallet_name, balance in successful_balances.items():
-            group = self.balance_service.extract_wallet_group(wallet_name)
-            wallet_list.append((group, wallet_name, balance))
-        
-        wallet_list.sort(key=lambda x: (x[0], x[1]))
-        
-        # Use fixed column widths for better alignment
-        group_width = 8
-        name_width = 20
-        amount_width = 15
-        
-        # Create table header with proper spacing
-        header = f"{'Group':<{group_width}}{'Wallet Name':<{name_width}}{'Amount (USDT)':>{amount_width}}"
-        separator = "=" * len(header)
-        
-        # Build table rows
-        table_lines = [header, separator]
-        
-        for group, wallet_name, balance in wallet_list:
-            # Truncate long names if needed
-            display_name = wallet_name[:name_width-1] if len(wallet_name) >= name_width else wallet_name
-            balance_str = f"{balance:,.2f}"
-            
-            row = f"{group:<{group_width}}{display_name:<{name_width}}{balance_str:>{amount_width}}"
-            table_lines.append(row)
-        
-        # Add separator and total row
-        table_lines.append(separator)
-        grand_total = sum(successful_balances.values())
-        total_str = f"{grand_total:,.2f}"
-        total_row = f"{'TOTAL':<{group_width}}{'':<{name_width}}{total_str:>{amount_width}}"
-        table_lines.append(total_row)
-        
-        return "\n".join(table_lines)
-
-    def _create_balance_table_card(self, balances: Dict[str, Decimal], time_str: str, not_found: List[str]) -> dict:
+    def _create_balance_table_card(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str, not_found: List[str]) -> dict:
         """Create table using Lark's column layout for better formatting."""
         
         # Calculate totals
@@ -259,10 +222,12 @@ class CheckHandler:
         successful_balances = {name: balance for name, balance in balances.items() if balance is not None}
         grand_total = sum(successful_balances.values())
         
-        # Sort wallets by group then by name
+        # Sort wallets by group then by name using the actual wallet data
         wallet_list = []
         for wallet_name, balance in successful_balances.items():
-            group = self.balance_service.extract_wallet_group(wallet_name)
+            # Get the company/group from the wallet data
+            wallet_info = wallets_to_check.get(wallet_name, {})
+            group = wallet_info.get('company', 'Unknown')
             wallet_list.append((group, wallet_name, balance))
         
         wallet_list.sort(key=lambda x: (x[0], x[1]))
