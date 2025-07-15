@@ -45,7 +45,6 @@ class HelpHandler:
         Create a professional interactive card for help message.
         This matches the Telegram-style formatting from your screenshot.
         """
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         return {
             "config": {
@@ -137,43 +136,31 @@ class HelpHandler:
                     ]
                 },
                 
-                # Footer with timestamp
+                # Quick Actions Section (replacing buttons)
+                {
+                    "tag": "hr"
+                },
                 {
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": f"📅 **{now}**"
+                        "content": "**⚡ Quick Actions:**"
                     }
                 },
-                
-                # Action buttons
                 {
-                    "tag": "action",
-                    "actions": [
+                    "tag": "div",
+                    "fields": [
                         {
-                            "tag": "button",
+                            "is_short": False,
                             "text": {
-                                "content": "📊 Check All Wallets",
-                                "tag": "plain_text"
-                            },
-                            "type": "primary",
-                            "value": {
-                                "action": "check_all"
-                            }
-                        },
-                        {
-                            "tag": "button", 
-                            "text": {
-                                "content": "📋 List Wallets",
-                                "tag": "plain_text"
-                            },
-                            "type": "default",
-                            "value": {
-                                "action": "list_wallets"
+                                "tag": "lark_md",
+                                "content": "• Type **/check** to check all wallet balances\n• Type **/list** to see all configured wallets\n• Type **/start** to test bot connection"
                             }
                         }
                     ]
-                }
+                },
+                
+
             ]
         }
 
@@ -213,7 +200,12 @@ class HelpHandler:
 • Balance reports sent via scheduled messages at midnight GMT+7
 • Only authorized team members can use commands
 
-📅 **{now}**"""
+---
+
+**⚡ Quick Actions:**
+• Type **/check** to check all wallet balances
+• Type **/list** to see all configured wallets
+• Type **/start** to test bot connection"""
 
     async def _send_disabled_message(self, context: Any):
         """Send a professional disabled message."""

@@ -2,6 +2,7 @@
 """
 Real Webhook-Based Lark Bot - Based on Production Architecture
 FIXED: Proper message deduplication that allows repeated commands
+ADDED: Comprehensive debug logging for troubleshooting
 """
 import asyncio
 import json
@@ -196,10 +197,56 @@ async def lark_webhook(request: Request):
         # Get request body
         body = await request.body()
         raw = body.decode("utf-8")
-        print("🔥🔥🔥 WEBHOOK TRIGGERED!")
-        print("RAW BODY:", raw)
-
         body_json = json.loads(raw)
+
+        # ENHANCED DEBUG: Show all event types and details
+        event_type = body_json.get("header", {}).get("event_type")
+        print("=" * 80)
+        print("🔥🔥🔥 WEBHOOK TRIGGERED!")
+        print(f"🔍 EVENT TYPE: {event_type}")
+        
+        if event_type == "im.message.receive_v1":
+            print("📨 MESSAGE EVENT RECEIVED!")
+            event_data = body_json.get("event", {})
+            message_data = event_data.get("message", {})
+            sender_data = event_data.get("sender", {})
+            
+            # Message details
+            thread_id = message_data.get("thread_id", "")
+            content = message_data.get("content", "")
+            chat_id = message_data.get("chat_id", "")
+            message_id = message_data.get("message_id", "")
+            
+            # Sender details
+            sender_id_obj = sender_data.get("sender_id", {})
+            open_id = sender_id_obj.get("open_id", "")
+            user_id = sender_id_obj.get("user_id", "")
+            union_id = sender_id_obj.get("union_id", "")
+            
+            print(f"📋 MESSAGE DETAILS:")
+            print(f"   Message ID: {message_id}")
+            print(f"   Chat ID: {chat_id}")
+            print(f"   Thread ID: {thread_id}")
+            print(f"   Content: {content}")
+            print()
+            print(f"👤 SENDER DETAILS:")
+            print(f"   Open ID: {open_id}")
+            print(f"   User ID: {user_id}")
+            print(f"   Union ID: {union_id}")
+            print()
+            print(f"🎯 TOPIC COMPARISON:")
+            print(f"   Expected Commands Thread: omt_1b138b4e444c577b")
+            print(f"   Actual Thread ID: {thread_id}")
+            print(f"   Is Commands Topic: {thread_id == 'omt_1b138b4e444c577b'}")
+            print()
+            print(f"🔐 AUTHORIZATION CHECK:")
+            print(f"   Current Auth User: ou_8306cee2e3b33c84b1799760f98d6e0b")
+            print(f"   Message Open ID: {open_id}")
+            print(f"   Authorization Match: {open_id == 'ou_8306cee2e3b33c84b1799760f98d6e0b'}")
+            print()
+            
+        print("RAW BODY:", raw[:500] + "..." if len(raw) > 500 else raw)
+        print("=" * 80)
 
         logger.info(f"📨 Webhook received: {json.dumps(body_json, indent=2)[:300]}...")
 
@@ -210,7 +257,6 @@ async def lark_webhook(request: Request):
             return JSONResponse({"challenge": challenge})
 
         # Handle message event for schema 2.0
-        event_type = body_json.get("header", {}).get("event_type")
         if event_type == "im.message.receive_v1":
             event = body_json.get("event", {})
             # IMPORTANT: Pass the header to the event for deduplication
@@ -258,9 +304,17 @@ async def process_message_event(event):
 
         # Parse message
         message = message_parser.parse_message(event)
-
-        # Debug: Check sender ID
-        print("👤 Extracted sender_id:", message.sender_id)
+        
+        # ENHANCED DEBUG: Show parsing results
+        print("🔍 PARSING RESULTS:")
+        raw_sender = event.get("sender", {}).get("sender_id", {})
+        print(f"Raw sender_id object: {raw_sender}")
+        print(f"Parsed message.sender_id: {message.sender_id}")
+        print(f"Parsed message.content: {message.content}")
+        print(f"Parsed message.thread_id: {message.thread_id}")
+        print(f"Parsed message.chat_id: {message.chat_id}")
+        print(f"Is from bot: {message.is_from_bot}")
+        print()
 
         # Skip bot messages
         if message.is_from_bot:
@@ -268,12 +322,26 @@ async def process_message_event(event):
             return
 
         # Check if it's a command
-        if not message_parser.is_command(message):
+        is_command = message_parser.is_command(message)
+        print(f"🎯 COMMAND CHECK:")
+        print(f"   Is command: {is_command}")
+        print(f"   Content: '{message.content}'")
+        print(f"   Starts with '/': {message.content.strip().startswith('/')}")
+        print()
+        
+        if not is_command:
             logger.info(f"📝 Not a command: {message.content}")
             return
 
         # Check if it's in commands topic
-        if not topic_manager.is_topic_message(message.thread_id, TopicType.COMMANDS):
+        is_commands_topic = topic_manager.is_topic_message(message.thread_id, TopicType.COMMANDS)
+        print(f"📍 TOPIC CHECK:")
+        print(f"   Message thread_id: {message.thread_id}")
+        print(f"   Expected commands topic: {getattr(Config, 'LARK_TOPIC_COMMANDS', 'Not set')}")
+        print(f"   Is commands topic: {is_commands_topic}")
+        print()
+        
+        if not is_commands_topic:
             logger.info(f"📍 Command not in commands topic: {message.thread_id}")
             return
 
@@ -306,6 +374,8 @@ async def process_message_event(event):
 
     except Exception as e:
         logger.error(f"❌ Message processing error: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     # Add missing method

@@ -22,7 +22,9 @@ class LarkMessage:
     def sender_id(self) -> str:
         try:
             sid = self.sender.get("sender_id", {})
-            resolved_id = sid.get("user_id") or sid.get("open_id") or sid.get("union_id", "")
+            # CHANGED: Priority now open_id (ou_xxx) > union_id > user_id
+            # This will extract the long ID format for authorization
+            resolved_id = sid.get("open_id") or sid.get("union_id") or sid.get("user_id", "")
             if not resolved_id:
                 print("⚠️ sender_id not found in:", json.dumps(self.sender, indent=2))
             return resolved_id
