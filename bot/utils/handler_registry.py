@@ -343,12 +343,19 @@ class HandlerRegistry:
 
 # FIXED: Authorization middleware now uses rich cards
 async def authorization_middleware(context: CommandContext) -> bool:
-    allowed_ids = os.getenv("ALLOWED_USERS", "")
+    # NEW: Use LARK_AUTHORIZED_USERS instead of ALLOWED_USERS
+    allowed_ids = os.getenv("LARK_AUTHORIZED_USERS", "")
     allowed_set = set(uid.strip() for uid in allowed_ids.split(",") if uid.strip())
+    
+    # NEW: If no users configured, allow all (development mode)
+    if not allowed_set:
+        logger.info(f"🔓 No authorization configured - allowing user {context.sender_id}")
+        return True
+    
     if context.sender_id not in allowed_set:
         logger.warning(f"🚫 Unauthorized command attempt: {context.command} by {context.sender_id}")
         try:
-            # Create authorization error card
+            # Create authorization error card with Open ID shown
             auth_error_card = {
                 "config": {
                     "wide_screen_mode": True,
@@ -373,14 +380,14 @@ async def authorization_middleware(context: CommandContext) -> bool:
                         "tag": "div",
                         "text": {
                             "tag": "lark_md",
-                            "content": "You are not authorized to use this bot."
+                            "content": f"🆔 **Your Open ID:** `{context.sender_id}`"
                         }
                     },
                     {
                         "tag": "div",
                         "text": {
                             "tag": "lark_md",
-                            "content": "Please contact an administrator for access."
+                            "content": "📞 **Contact your administrator with your Open ID to request access.**"
                         }
                     }
                 ]
@@ -389,6 +396,8 @@ async def authorization_middleware(context: CommandContext) -> bool:
         except Exception as e:
             logger.error(f"❌ Error sending authorization error: {e}")
         return False
+    
+    logger.info(f"✅ User {context.sender_id} authorized for /{context.command}")
     return True
 
 # Optional: Rate limiter middleware with rich cards

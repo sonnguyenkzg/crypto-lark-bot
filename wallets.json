@@ -43,5 +43,90 @@
     "company": "KZP",
     "wallet": "KZP KZO1",
     "address": "TDj1whxgFJSGktyv9yLR3wZUm5gNK8X7m2"
+  },
+  "TRC A 1": {
+    "company": "KZG",
+    "wallet": "TRC A 1",
+    "address": "TDgWVGJKktTMaGt9fLJhTr7PHY3hEfk6BU"
+  },
+  "TRC Z 1": {
+    "company": "KZG",
+    "wallet": "TRC Z 1",
+    "address": "TGtU9dWBjikqS2aGLtmTUUKeNaPVvsxjkV"
+  },
+  "TRC Y 1": {
+    "company": "KZG",
+    "wallet": "TRC Y 1",
+    "address": "TRm1AbwXCvRt9ZWw57FFkk5hqUSHCp8Mzg"
+  },
+  "TH COY TRC 1": {
+    "company": "KZO TH",
+    "wallet": "TH COY TRC 1",
+    "address": "TUWd9coZtzMcWUSWRkuJWcar8DBtpRZQ6M"
+  },
+  "TRC TH 1": {
+    "company": "KZO TH",
+    "wallet": "TRC TH 1",
+    "address": "TUntSyN3WUEhBkcHgaE5eLqAgKUCRZEFac"
+  },
+  "PH COY TRC 1": {
+    "company": "KZO PH",
+    "wallet": "PH COY TRC 1",
+    "address": "TMz9v13E52izBe6QHvDTSFA4JABqsP4WQu"
+  },
+  "TRC PH 1": {
+    "company": "KZO PH",
+    "wallet": "TRC PH 1",
+    "address": "TTXwmHMrUFoU4zFiusbSHHuMNXPYiXMhCX"
+  },
+  "COY RB 1": {
+    "company": "KZG",
+    "wallet": "COY RB 1",
+    "address": "TQYwFmzndkSQhjWFnCoK2M1YfBQj4ttLP3"
+  },
+  "ID Settle TRC 1": {
+    "company": "KZO ID",
+    "wallet": "ID Settle TRC 1",
+    "address": "TFgN2VqP88VA7ZZ814zWEJE9um5kcWgqhS"
+  },
+  "BD Settle TRC 1": {
+    "company": "KZO BD",
+    "wallet": "BD Settle TRC 1",
+    "address": "TSKPX7BxLBoJ2KA61FszMnE1usBYpzEa7z"
+  },
+  "PK Settle TRC 1": {
+    "company": "KZO PK",
+    "wallet": "PK Settle TRC 1",
+    "address": "TWQazE83BLmJychkfbdEpEVggdg2pWfP2X"
+  },
+  "ID Settle Ops TRC 1": {
+    "company": "KZO ID",
+    "wallet": "ID Settle Ops TRC 1",
+    "address": "TFaiojM5otUjUUVyYBg8KEezw73jHwghFu"
+  },
+  "ID COY TRC": {
+    "company": "KZO ID",
+    "wallet": "ID COY TRC",
+    "address": "TX25tux956AayZLb6JDLbUotfTzMK51N7q"
+  },
+  "BD COY TRC": {
+    "company": "KZO BD",
+    "wallet": "BD COY TRC",
+    "address": "TWr4KKq4YzaadrYd1b17eoe1j8RHnxnKnQ"
+  },
+  "BD Settle Ops TRC 1": {
+    "company": "KZO BD",
+    "wallet": "BD Settle Ops TRC 1",
+    "address": "TGTQw72UtZQooQtEbjGbqdtxJdCZU91RvD"
+  },
+  "PK COY TRC": {
+    "company": "KZO PK",
+    "wallet": "PK COY TRC",
+    "address": "TJodiJnCRC8VY5Nt7uSdZ8po2A1YpFJ1Xw"
+  },
+  "PK Settle Ops TRC 1": {
+    "company": "KZO PK",
+    "wallet": "PK Settle Ops TRC 1",
+    "address": "TF8TR2kVWmpJxzW2zBJ3tZuZxkfV6GVbCC"
   }
 }
