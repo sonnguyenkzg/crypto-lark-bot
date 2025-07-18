@@ -2,6 +2,7 @@
 #
 # Unified Lark Bot Startup Script
 # Starts interactive bot, daily reports, and ngrok tunnel together
+# FIXED: Forces fresh .env loading on every startup
 #
 
 # Colors for output
@@ -92,6 +93,32 @@ stop_existing() {
     echo -e "${GREEN}   ✅ Cleanup completed${NC}"
 }
 
+# Clear environment variables to force fresh .env loading
+clear_environment() {
+    echo -e "${BLUE}🧹 Clearing environment variables for fresh loading...${NC}"
+    
+    # Clear all LARK-related environment variables
+    unset LARK_APP_ID
+    unset LARK_APP_SECRET
+    unset LARK_CHAT_ID
+    unset LARK_TOPIC_QUICKGUIDE
+    unset LARK_TOPIC_COMMANDS
+    unset LARK_TOPIC_DAILYREPORT
+    unset LARK_TOPIC_QUICKGUIDE_MSG
+    unset LARK_TOPIC_COMMANDS_MSG
+    unset LARK_TOPIC_DAILYREPORT_MSG
+    unset LARK_AUTHORIZED_USERS
+    unset ENVIRONMENT
+    unset POLL_INTERVAL
+    unset COMMAND_PREFIX
+    unset LOG_LEVEL
+    unset WALLETS_FILE
+    unset TRON_API_KEY
+    unset NGROK_KZG_TOKEN
+    
+    echo -e "${GREEN}   ✅ Environment variables cleared${NC}"
+}
+
 # Activate virtual environment
 setup_environment() {
     echo -e "${BLUE}📦 Setting up environment...${NC}"
@@ -109,7 +136,7 @@ setup_environment() {
     echo "   📁 Logs directory created: logs/"
 }
 
-# Validate configuration
+# Validate configuration with forced .env reload
 validate_config() {
     echo -e "${BLUE}🔍 Validating configuration...${NC}"
     
@@ -132,9 +159,33 @@ validate_config() {
         exit 1
     fi
     
-    # Test configuration loading
-    if python -c "from bot.utils.config import Config; Config.validate_config()" 2>/dev/null; then
-        echo -e "${GREEN}   ✅ Configuration valid${NC}"
+    # Force reload .env and test configuration loading
+    if python -c "
+import os
+from dotenv import load_dotenv
+
+# Clear existing env vars and force reload
+for key in list(os.environ.keys()):
+    if key.startswith('LARK_') or key in ['ENVIRONMENT', 'POLL_INTERVAL', 'COMMAND_PREFIX', 'LOG_LEVEL', 'WALLETS_FILE', 'TRON_API_KEY']:
+        del os.environ[key]
+
+# Force load from .env with override
+load_dotenv('.env', override=True)
+
+# Test config validation
+from bot.utils.config import Config
+Config.validate_config()
+
+# Verify LARK_AUTHORIZED_USERS loaded correctly
+users = os.getenv('LARK_AUTHORIZED_USERS', '')
+user_count = len([u.strip() for u in users.split(',') if u.strip()])
+print(f'✅ Loaded {user_count} authorized users')
+if user_count > 0:
+    print(f'   Users: {users[:60]}...')
+else:
+    print('   ⚠️  No authorized users found - check LARK_AUTHORIZED_USERS in .env')
+" 2>/dev/null; then
+        echo -e "${GREEN}   ✅ Configuration valid with fresh .env reload${NC}"
     else
         echo -e "${RED}   ❌ Configuration validation failed${NC}"
         echo "   💡 Check your .env file settings"
@@ -179,12 +230,24 @@ start_ngrok() {
     fi
 }
 
-# Start interactive bot
+# Start interactive bot with environment isolation
 start_interactive_bot() {
     echo -e "${BLUE}🎮 Starting Lark interactive bot...${NC}"
     
-    # Start lark_bot.py in background
-    nohup python lark_bot.py > logs/startup.log 2>&1 &
+    # Start lark_bot.py in background with clean environment
+    nohup bash -c "
+        cd $(pwd)
+        source .venv/bin/activate 2>/dev/null || true
+        
+        # Clear environment variables in this subprocess
+        unset LARK_APP_ID LARK_APP_SECRET LARK_CHAT_ID
+        unset LARK_TOPIC_QUICKGUIDE LARK_TOPIC_COMMANDS LARK_TOPIC_DAILYREPORT
+        unset LARK_TOPIC_QUICKGUIDE_MSG LARK_TOPIC_COMMANDS_MSG LARK_TOPIC_DAILYREPORT_MSG
+        unset LARK_AUTHORIZED_USERS ENVIRONMENT POLL_INTERVAL COMMAND_PREFIX
+        unset LOG_LEVEL WALLETS_FILE TRON_API_KEY NGROK_KZG_TOKEN
+        
+        python lark_bot.py
+    " > logs/startup.log 2>&1 &
     LARK_BOT_PID=$!
     
     # Wait a moment and check if it started successfully
@@ -203,12 +266,24 @@ start_interactive_bot() {
     fi
 }
 
-# Start daily reports
+# Start daily reports with environment isolation
 start_daily_reports() {
     echo -e "${BLUE}📅 Starting daily reports...${NC}"
     
-    # Start main.py in background
-    nohup python main.py > logs/daily_reports.log 2>&1 &
+    # Start main.py in background with clean environment
+    nohup bash -c "
+        cd $(pwd)
+        source .venv/bin/activate 2>/dev/null || true
+        
+        # Clear environment variables in this subprocess
+        unset LARK_APP_ID LARK_APP_SECRET LARK_CHAT_ID
+        unset LARK_TOPIC_QUICKGUIDE LARK_TOPIC_COMMANDS LARK_TOPIC_DAILYREPORT
+        unset LARK_TOPIC_QUICKGUIDE_MSG LARK_TOPIC_COMMANDS_MSG LARK_TOPIC_DAILYREPORT_MSG
+        unset LARK_AUTHORIZED_USERS ENVIRONMENT POLL_INTERVAL COMMAND_PREFIX
+        unset LOG_LEVEL WALLETS_FILE TRON_API_KEY NGROK_KZG_TOKEN
+        
+        python main.py
+    " > logs/daily_reports.log 2>&1 &
     DAILY_REPORTS_PID=$!
     
     # Wait a moment and check if it started successfully
@@ -286,6 +361,7 @@ show_status() {
     echo "   • Daily balance reports at midnight GMT+7"
     echo "   • Real-time wallet monitoring"
     echo "   • Secure ngrok tunnel for webhooks"
+    echo "   • Fresh .env loading on every restart"
     echo ""
 }
 
@@ -336,8 +412,9 @@ test_ngrok() {
 
 # Main execution
 main() {
-    # Pre-startup checks
+    # Pre-startup checks with forced environment reload
     stop_existing
+    clear_environment
     setup_environment
     validate_config
     test_services
@@ -361,6 +438,8 @@ main() {
             echo "   2. Test bot in Lark: /start"
             echo "   3. Test daily report: python main.py test"
             echo "   4. Monitor logs for any issues"
+            echo ""
+            echo "🔄 Environment reload: Fresh .env loading guaranteed on every start!"
             echo ""
             
             return 0
@@ -463,6 +542,7 @@ case "$1" in
         echo "   • Auto-rotating logs (prevents disk space issues)"
         echo "   • Process monitoring and management"
         echo "   • Comprehensive error handling"
+        echo "   • Forces fresh .env loading on every restart"
         echo ""
         ;;
     "")
