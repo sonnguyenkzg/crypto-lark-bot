@@ -2,6 +2,7 @@
 """
 Wallet Service - Manages wallet data from wallets.json
 Following the same pattern as your Telegram bot
+FINAL FIX: Corrected key format and field naming
 """
 
 import json
@@ -79,14 +80,14 @@ class WalletService:
             total_count = 0
             
             for wallet_key, wallet_data in wallets.items():
-                # Assuming wallet_data has company, wallet, address
-                # Based on your JSON format: "wallet" key instead of "name"
+                # Handle both old format ('name') and new format ('wallet')
                 company = wallet_data.get('company', 'Unknown')
-                name = wallet_data.get('wallet', wallet_key)  # FIXED: Changed from 'name' to 'wallet'
+                # Try 'wallet' first (new format), fallback to 'name' (old format), then key
+                name = wallet_data.get('wallet', wallet_data.get('name', wallet_key))
                 address = wallet_data.get('address', 'Unknown')
                 
                 companies[company].append({
-                    'name': name,
+                    'name': name,  # Output format uses 'name' for display
                     'address': address,
                     'key': wallet_key
                 })
@@ -111,8 +112,8 @@ class WalletService:
         try:
             wallets = self._load_wallets()
             
-            # FIXED: Use wallet name directly as key to match your JSON structure
-            wallet_key = name  # Use the wallet name directly as the key
+            # CRITICAL FIX: Use wallet name directly as key (no underscores)
+            wallet_key = name
             
             # Check if wallet already exists (multiple checks)
             
@@ -120,9 +121,10 @@ class WalletService:
             if wallet_key in wallets:
                 return False, f"❌ **Wallet '{name}' already exists**"
             
-            # 2. Check if wallet name already exists (case-insensitive search)
+            # 2. Check if wallet name already exists (case-insensitive search through all entries)
             for existing_key, existing_data in wallets.items():
-                existing_name = existing_data.get('wallet', existing_key)
+                # Handle both old format ('name') and new format ('wallet')
+                existing_name = existing_data.get('wallet', existing_data.get('name', existing_key))
                 if existing_name.lower() == name.lower():
                     existing_company = existing_data.get('company', 'Unknown')
                     return False, f"❌ **Wallet name '{name}' already exists in {existing_company}**"
@@ -130,7 +132,8 @@ class WalletService:
             # 3. Check if address already exists
             for existing_key, existing_data in wallets.items():
                 if existing_data.get('address') == address:
-                    existing_name = existing_data.get('wallet', 'Unknown')  # FIXED: Changed from 'name' to 'wallet'
+                    # Handle both old format ('name') and new format ('wallet')
+                    existing_name = existing_data.get('wallet', existing_data.get('name', 'Unknown'))
                     existing_company = existing_data.get('company', 'Unknown')
                     return False, f"❌ **Address already used by '{existing_name}' in {existing_company}**"
             
@@ -139,10 +142,10 @@ class WalletService:
             if not is_valid:
                 return False, validation_message
             
-            # Add wallet
+            # CRITICAL FIX: Add wallet with 'wallet' field (not 'name')
             wallets[wallet_key] = {
                 'company': company,
-                'wallet': name,  # FIXED: Changed from 'name' to 'wallet' to match your JSON format
+                'wallet': name,    # FIXED: Use 'wallet' field to match your JSON structure
                 'address': address,
                 'created_at': self._get_current_time()
             }
@@ -163,15 +166,21 @@ class WalletService:
         try:
             wallets = self._load_wallets()
             
-            # FIXED: Search by wallet name more efficiently
-            # First try direct key lookup (most common case)
+            # Search strategy:
+            # 1. Try direct key lookup (most efficient)
+            # 2. Search by wallet field (case-insensitive)
+            # 3. Search by old 'name' field (backward compatibility)
+            
+            wallet_to_remove = None
+            
+            # Strategy 1: Direct key lookup
             if wallet_name in wallets:
                 wallet_to_remove = wallet_name
             else:
-                # If not found as direct key, search by wallet field (case-insensitive)
-                wallet_to_remove = None
+                # Strategy 2 & 3: Search through all entries
                 for wallet_key, wallet_data in wallets.items():
-                    stored_name = wallet_data.get('wallet', wallet_key)
+                    # Try 'wallet' field first, then 'name' field for backward compatibility
+                    stored_name = wallet_data.get('wallet', wallet_data.get('name', wallet_key))
                     if stored_name.lower() == wallet_name.lower():
                         wallet_to_remove = wallet_key
                         break
@@ -185,7 +194,8 @@ class WalletService:
             # Save to file
             if self._save_wallets(wallets):
                 company = removed_wallet.get('company', 'Unknown')
-                actual_name = removed_wallet.get('wallet', wallet_name)
+                # Get actual name from removed wallet
+                actual_name = removed_wallet.get('wallet', removed_wallet.get('name', wallet_name))
                 self.logger.info(f"Removed wallet: {company} - {actual_name}")
                 return True, f"✅ **Wallet removed successfully!**\n\n🏢 **Company:** {company}\n📝 **Name:** {actual_name}"
             else:
@@ -200,13 +210,19 @@ class WalletService:
         try:
             wallets = self._load_wallets()
             
-            # First try direct key lookup (most efficient)
+            # Search strategy:
+            # 1. Try direct key lookup (most efficient)  
+            # 2. Search by wallet field (case-insensitive)
+            # 3. Search by old 'name' field (backward compatibility)
+            
+            # Strategy 1: Direct key lookup
             if wallet_name in wallets:
                 return True, wallets[wallet_name]
             
-            # If not found as direct key, search by wallet field (case-insensitive)
+            # Strategy 2 & 3: Search through all entries
             for wallet_key, wallet_data in wallets.items():
-                stored_name = wallet_data.get('wallet', wallet_key)
+                # Try 'wallet' field first, then 'name' field for backward compatibility
+                stored_name = wallet_data.get('wallet', wallet_data.get('name', wallet_key))
                 if stored_name.lower() == wallet_name.lower():
                     return True, wallet_data
             
@@ -221,7 +237,7 @@ class WalletService:
         from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# Example wallet.json structure (UPDATED to match your actual format):
+# Expected wallet.json structure after fixes:
 """
 {
   "KZP TH 1": {
@@ -230,10 +246,10 @@ class WalletService:
     "address": "TF2GVKwjVchpEWs1TonJW8yP6HAcvAvG93",
     "created_at": "2024-01-01 12:00:00"
   },
-  "KZP 96G1": {
-    "company": "KZP",
-    "wallet": "KZP 96G1",
-    "address": "TNZJSwTSMK4oR79CYzy8BGkGLWNmQxcuM8",
+  "TEST WALLET 1": {
+    "company": "TEST",
+    "wallet": "TEST WALLET 1",
+    "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
     "created_at": "2024-01-01 12:01:00"
   }
 }
