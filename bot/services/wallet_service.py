@@ -79,10 +79,10 @@ class WalletService:
             total_count = 0
             
             for wallet_key, wallet_data in wallets.items():
-                # Assuming wallet_data has company, name, address
-                # Based on your screenshot format: "KZP 96G1", "KZP BLG1" etc.
+                # Assuming wallet_data has company, wallet, address
+                # Based on your JSON format: "wallet" key instead of "name"
                 company = wallet_data.get('company', 'Unknown')
-                name = wallet_data.get('name', wallet_key)
+                name = wallet_data.get('wallet', wallet_key)  # FIXED: Changed from 'name' to 'wallet'
                 address = wallet_data.get('address', 'Unknown')
                 
                 companies[company].append({
@@ -111,25 +111,26 @@ class WalletService:
         try:
             wallets = self._load_wallets()
             
-            # Create wallet key (you can adjust this format)
-            wallet_key = f"{company}_{name}".replace(" ", "_")
+            # FIXED: Use wallet name directly as key to match your JSON structure
+            wallet_key = name  # Use the wallet name directly as the key
             
             # Check if wallet already exists (multiple checks)
             
             # 1. Check if exact wallet key exists
             if wallet_key in wallets:
-                return False, f"❌ **Wallet '{name}' already exists for {company}**"
+                return False, f"❌ **Wallet '{name}' already exists**"
             
-            # 2. Check if wallet name already exists (regardless of company)
+            # 2. Check if wallet name already exists (case-insensitive search)
             for existing_key, existing_data in wallets.items():
-                if existing_data.get('name') == name:
+                existing_name = existing_data.get('wallet', existing_key)
+                if existing_name.lower() == name.lower():
                     existing_company = existing_data.get('company', 'Unknown')
                     return False, f"❌ **Wallet name '{name}' already exists in {existing_company}**"
             
             # 3. Check if address already exists
             for existing_key, existing_data in wallets.items():
                 if existing_data.get('address') == address:
-                    existing_name = existing_data.get('name', 'Unknown')
+                    existing_name = existing_data.get('wallet', 'Unknown')  # FIXED: Changed from 'name' to 'wallet'
                     existing_company = existing_data.get('company', 'Unknown')
                     return False, f"❌ **Address already used by '{existing_name}' in {existing_company}**"
             
@@ -141,7 +142,7 @@ class WalletService:
             # Add wallet
             wallets[wallet_key] = {
                 'company': company,
-                'name': name,
+                'wallet': name,  # FIXED: Changed from 'name' to 'wallet' to match your JSON format
                 'address': address,
                 'created_at': self._get_current_time()
             }
@@ -162,12 +163,18 @@ class WalletService:
         try:
             wallets = self._load_wallets()
             
-            # Find wallet by name (search all wallets)
-            wallet_to_remove = None
-            for wallet_key, wallet_data in wallets.items():
-                if wallet_data.get('name') == wallet_name:
-                    wallet_to_remove = wallet_key
-                    break
+            # FIXED: Search by wallet name more efficiently
+            # First try direct key lookup (most common case)
+            if wallet_name in wallets:
+                wallet_to_remove = wallet_name
+            else:
+                # If not found as direct key, search by wallet field (case-insensitive)
+                wallet_to_remove = None
+                for wallet_key, wallet_data in wallets.items():
+                    stored_name = wallet_data.get('wallet', wallet_key)
+                    if stored_name.lower() == wallet_name.lower():
+                        wallet_to_remove = wallet_key
+                        break
             
             if not wallet_to_remove:
                 return False, f"❌ **Wallet '{wallet_name}' not found.**"
@@ -178,8 +185,9 @@ class WalletService:
             # Save to file
             if self._save_wallets(wallets):
                 company = removed_wallet.get('company', 'Unknown')
-                self.logger.info(f"Removed wallet: {company} - {wallet_name}")
-                return True, f"✅ **Wallet removed successfully!**\n\n🏢 **Company:** {company}\n📝 **Name:** {wallet_name}"
+                actual_name = removed_wallet.get('wallet', wallet_name)
+                self.logger.info(f"Removed wallet: {company} - {actual_name}")
+                return True, f"✅ **Wallet removed successfully!**\n\n🏢 **Company:** {company}\n📝 **Name:** {actual_name}"
             else:
                 return False, "❌ **Failed to save wallet data.**"
                 
@@ -192,8 +200,14 @@ class WalletService:
         try:
             wallets = self._load_wallets()
             
+            # First try direct key lookup (most efficient)
+            if wallet_name in wallets:
+                return True, wallets[wallet_name]
+            
+            # If not found as direct key, search by wallet field (case-insensitive)
             for wallet_key, wallet_data in wallets.items():
-                if wallet_data.get('name') == wallet_name:
+                stored_name = wallet_data.get('wallet', wallet_key)
+                if stored_name.lower() == wallet_name.lower():
                     return True, wallet_data
             
             return False, {}
@@ -207,19 +221,19 @@ class WalletService:
         from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# Example wallet.json structure:
+# Example wallet.json structure (UPDATED to match your actual format):
 """
 {
-  "KZP_96G1": {
+  "KZP TH 1": {
     "company": "KZP",
-    "name": "KZP 96G1", 
-    "address": "TNZJSwTSMK4oR79CYzy8BGkGLWNmQxcuM8",
+    "wallet": "KZP TH 1", 
+    "address": "TF2GVKwjVchpEWs1TonJW8yP6HAcvAvG93",
     "created_at": "2024-01-01 12:00:00"
   },
-  "KZP_BLG1": {
+  "KZP 96G1": {
     "company": "KZP",
-    "name": "KZP BLG1",
-    "address": "TARvAP993BSFBuQhjc8oGdgv1skNDFtB7Z", 
+    "wallet": "KZP 96G1",
+    "address": "TNZJSwTSMK4oR79CYzy8BGkGLWNmQxcuM8",
     "created_at": "2024-01-01 12:01:00"
   }
 }

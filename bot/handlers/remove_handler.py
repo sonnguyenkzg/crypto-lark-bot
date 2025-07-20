@@ -85,8 +85,10 @@ class RemoveHandler:
                         for wallet in company_wallets:
                             if wallet['address'].lower() == identifier.lower():
                                 # Found wallet with matching address
+                                # FIXED: Use 'wallet' key instead of 'name' to match JSON structure
                                 wallet_info = {
-                                    'name': wallet['name'],
+                                    'name': wallet['name'],  # This comes from list_wallets which uses 'name' in output
+                                    'wallet': wallet['name'],  # Add wallet key for consistency
                                     'address': wallet['address'],
                                     'company': company_name
                                 }
@@ -144,7 +146,8 @@ class RemoveHandler:
                 return False
 
             wallet_info = result
-            wallet_name = wallet_info['name']
+            # FIXED: Get wallet name from the correct key
+            wallet_name = wallet_info.get('wallet', wallet_info.get('name', 'Unknown'))
 
             # Attempt to remove wallet using wallet service (by name)
             success, message = self.wallet_service.remove_wallet(wallet_name)

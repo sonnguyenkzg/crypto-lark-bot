@@ -78,7 +78,8 @@ class CheckHandler:
                 found_wallet = False
                 for wallet_key, wallet_info in wallet_data.items():
                     if wallet_info['address'].lower() == input_str.lower():
-                        wallets_to_check[wallet_info['name']] = wallet_info
+                        # FIXED: Use 'wallet' key instead of 'name'
+                        wallets_to_check[wallet_info['wallet']] = wallet_info
                         found_wallet = True
                         break
                 
@@ -86,7 +87,7 @@ class CheckHandler:
                     # Address not in our list - still check it
                     display_name = f"External: {input_str[:10]}...{input_str[-6:]}"
                     wallets_to_check[display_name] = {
-                        'name': display_name,
+                        'wallet': display_name,  # FIXED: Use 'wallet' key
                         'address': input_str,
                         'company': 'External'
                     }
@@ -95,7 +96,8 @@ class CheckHandler:
                 # It's a wallet name - find the address (case-insensitive)
                 found_wallet = False
                 for wallet_key, wallet_info in wallet_data.items():
-                    wallet_name = wallet_info.get('name', wallet_key)
+                    # FIXED: Use 'wallet' key instead of 'name'
+                    wallet_name = wallet_info.get('wallet', wallet_key)
                     if wallet_name.lower() == input_str.lower():
                         wallets_to_check[wallet_name] = wallet_info
                         found_wallet = True
@@ -142,7 +144,7 @@ class CheckHandler:
                 for wallet in company_wallets:
                     wallet_key = f"{wallet['name']}"
                     wallet_data[wallet_key] = {
-                        'name': wallet['name'],
+                        'wallet': wallet['name'],  # FIXED: Use 'wallet' key instead of 'name'
                         'address': wallet['address'],
                         'company': company_name  # Use the actual company name from the data structure
                     }
@@ -152,7 +154,8 @@ class CheckHandler:
             
             if not inputs:
                 # Check all wallets - return full wallet info
-                wallets_to_check = {info['name']: info for info in wallet_data.values()}
+                # FIXED: Use 'wallet' key instead of 'name'
+                wallets_to_check = {info['wallet']: info for info in wallet_data.values()}
                 not_found = []
             else:
                 # Resolve inputs to wallets
