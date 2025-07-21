@@ -109,79 +109,79 @@ async def startup_event():
         logger.info("✅ Lark Bot initialized successfully")
         
         # Send startup message as rich card
-        async with api_client:
-            startup_card = {
-                "config": {
-                    "wide_screen_mode": True,
-                    "enable_forward": True
-                },
-                "header": {
-                    "template": "green",
-                    "title": {
-                        "tag": "plain_text",
-                        "content": "🎯 Real Webhook Bot Started!"
-                    },
-                    "subtitle": {
-                        "tag": "plain_text",
-                        "content": f"Started at: {Config.get_current_time() if hasattr(Config, 'get_current_time') else 'Now'}"
-                    }
-                },
-                "elements": [
-                    {
-                        "tag": "div",
-                        "text": {
-                            "tag": "lark_md",
-                            "content": "🎉 **I can now hear your actual commands!**"
-                        }
-                    },
-                    {
-                        "tag": "hr"
-                    },
-                    {
-                        "tag": "div",
-                        "text": {
-                            "tag": "lark_md",
-                            "content": "💡 **Try typing /help in #commands topic**"
-                        }
-                    },
-                    {
-                        "tag": "div",
-                        "text": {
-                            "tag": "lark_md",
-                            "content": "⚡ **Instant responses!**"
-                        }
-                    },
-                    {
-                        "tag": "hr"
-                    },
-                    {
-                        "tag": "div",
-                        "text": {
-                            "tag": "lark_md",
-                            "content": "**Available Commands:**"
-                        }
-                    },
-                    {
-                        "tag": "div",
-                        "text": {
-                            "tag": "lark_md",
-                            "content": "• **/help** - Show all commands\n• **/check** - Check wallet balances\n• **/list** - List all wallets\n• **/add** - Add new wallet\n• **/remove** - Remove wallet"
-                        }
-                    },
-                    {
-                        "tag": "hr"
-                    },
-                    {
-                        "tag": "div",
-                        "text": {
-                            "tag": "lark_md",
-                            "content": "🔗 **Webhook endpoint:** /webhook\n✅ **Ready for real-time interaction!**"
-                        }
-                    }
-                ]
-            }
+        # async with api_client:
+        #     startup_card = {
+        #         "config": {
+        #             "wide_screen_mode": True,
+        #             "enable_forward": True
+        #         },
+        #         "header": {
+        #             "template": "green",
+        #             "title": {
+        #                 "tag": "plain_text",
+        #                 "content": "🎯 Real Webhook Bot Started!"
+        #             },
+        #             "subtitle": {
+        #                 "tag": "plain_text",
+        #                 "content": f"Started at: {Config.get_current_time() if hasattr(Config, 'get_current_time') else 'Now'}"
+        #             }
+        #         },
+        #         "elements": [
+        #             {
+        #                 "tag": "div",
+        #                 "text": {
+        #                     "tag": "lark_md",
+        #                     "content": "🎉 **I can now hear your actual commands!**"
+        #                 }
+        #             },
+        #             {
+        #                 "tag": "hr"
+        #             },
+        #             {
+        #                 "tag": "div",
+        #                 "text": {
+        #                     "tag": "lark_md",
+        #                     "content": "💡 **Try typing /help in #commands topic**"
+        #                 }
+        #             },
+        #             {
+        #                 "tag": "div",
+        #                 "text": {
+        #                     "tag": "lark_md",
+        #                     "content": "⚡ **Instant responses!**"
+        #                 }
+        #             },
+        #             {
+        #                 "tag": "hr"
+        #             },
+        #             {
+        #                 "tag": "div",
+        #                 "text": {
+        #                     "tag": "lark_md",
+        #                     "content": "**Available Commands:**"
+        #                 }
+        #             },
+        #             {
+        #                 "tag": "div",
+        #                 "text": {
+        #                     "tag": "lark_md",
+        #                     "content": "• **/help** - Show all commands\n• **/check** - Check wallet balances\n• **/list** - List all wallets\n• **/add** - Add new wallet\n• **/remove** - Remove wallet"
+        #                 }
+        #             },
+        #             {
+        #                 "tag": "hr"
+        #             },
+        #             {
+        #                 "tag": "div",
+        #                 "text": {
+        #                     "tag": "lark_md",
+        #                     "content": "🔗 **Webhook endpoint:** /webhook\n✅ **Ready for real-time interaction!**"
+        #                 }
+        #             }
+        #         ]
+        #     }
             
-            await topic_manager.send_command_response(startup_card, msg_type="interactive")
+        #     await topic_manager.send_command_response(startup_card, msg_type="interactive")
         
     except Exception as e:
         logger.error(f"❌ Startup failed: {e}")
