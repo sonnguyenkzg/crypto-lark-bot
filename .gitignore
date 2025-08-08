@@ -125,3 +125,7 @@ Thumbs.db
 # Project specific
 logs/
 *.backup.*
+
+*-serviceaccount-key.json
+serviceaccount*.json
+kzg-cryptohash-serviceaccount-key.json
