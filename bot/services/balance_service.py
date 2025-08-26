@@ -34,10 +34,18 @@ class BalanceService:
         """
         url = f"https://apilist.tronscanapi.com/api/account/tokens?address={address}"
         
+        # Add API key header if available
+        headers = {}
+        import os
+        api_key = os.getenv('TRON_API_KEY')  # Note: you said TRON_API_KEY, but Tronscan expects TRONSCAN_API_KEY
+        if api_key:
+            headers['TRON-PRO-API-KEY'] = api_key
+        
         try:
-            resp = requests.get(url, timeout=self.API_TIMEOUT)
+            resp = requests.get(url, headers=headers, timeout=self.API_TIMEOUT)  # Add headers parameter
             resp.raise_for_status()
 
+            # Rest of your method remains exactly the same
             data = resp.json().get("data", [])
             if not data:
                 logger.warning(f"No token data found for address {address}")
