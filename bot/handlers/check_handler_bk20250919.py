@@ -4,8 +4,7 @@ Check Handler for Lark Bot - Following Telegram Bot Pattern
 Checks wallet balances with beautiful table format
 FIXED: Group display issue - Now correctly uses company information from wallet data
 """
-from bot.services.google_sheets_logger import GoogleSheetsBalanceLogger
-import os
+
 import logging
 import re
 import asyncio
@@ -29,7 +28,6 @@ class CheckHandler:
         self.enabled = True
         self.wallet_service = WalletService()
         self.balance_service = BalanceService()
-        self.sheets_logger = GoogleSheetsBalanceLogger()
 
     def extract_quoted_strings(self, text: str) -> List[str]:
         """Extract quoted strings from text."""
@@ -190,18 +188,6 @@ class CheckHandler:
                 timeout_card = self._create_timeout_error_card()
                 await context.topic_manager.send_command_response(timeout_card, msg_type="interactive")
                 return False
-            
-            # Log to Google Sheets and track success
-            sheets_logged = False
-            batch_id = None
-            try:
-                success, batch_id = self.sheets_logger.log_balance_check(balances, wallets_to_check, check_type="manual")
-                sheets_logged = success
-                logger.info("✅ Successfully logged to Google Sheets")
-            except Exception as e:
-                logger.warning(f"Failed to log to Google Sheets: {e}")
-                sheets_logged = False
-                batch_id = None
 
             # Process results and create table
             successful_checks = sum(1 for balance in balances.values() if balance is not None)
@@ -213,8 +199,7 @@ class CheckHandler:
 
             # Create the beautiful table card matching your screenshot
             time_str = self.balance_service.get_current_gmt_time()
-            
-            table_card = self._create_balance_table_card_with_sheets_info(balances, wallets_to_check, time_str, not_found, sheets_logged, batch_id)
+            table_card = self._create_balance_table_card(balances, wallets_to_check, time_str, not_found)
             await context.topic_manager.send_command_response(table_card, msg_type="interactive")
 
             logger.info(f"✅ Check command completed for user: {user_id}, {successful_checks}/{len(wallets_to_check)} successful")
@@ -232,10 +217,8 @@ class CheckHandler:
             _CHECK_EXECUTION_LOCK = False
             logger.info(f"🔓 Check command UNLOCKED - Execution finished for user {context.sender_id}")
 
-    # Modify your CheckHandler class - add this method and update the existing one
-
-    def _create_balance_table_card_with_sheets_info(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str, not_found: List[str], sheets_logged: bool = False, batch_id: str = None) -> dict:        
-        """Create table using Lark's column layout for better formatting with Google Sheets info."""
+    def _create_balance_table_card(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str, not_found: List[str]) -> dict:
+        """Create table using Lark's column layout for better formatting."""
         
         # Calculate totals
         total_wallets = len(balances)
@@ -251,20 +234,6 @@ class CheckHandler:
             wallet_list.append((group, wallet_name, balance))
         
         wallet_list.sort(key=lambda x: (x[0], x[1]))
-        
-        # Calculate grouped totals by prefix
-        dpp_total = Decimal('0')
-        kzg_kzo_total = Decimal('0') 
-        kzp_total = Decimal('0')
-        
-        for group, wallet_name, balance in wallet_list:
-            # Check prefix of group name
-            if group.startswith('DPP'):
-                dpp_total += balance
-            elif group.startswith('KZG') or group.startswith('KZO'):
-                kzg_kzo_total += balance
-            elif group.startswith('KZP'):
-                kzp_total += balance
         
         # Build elements with structured table layout
         elements = [
@@ -289,203 +258,11 @@ class CheckHandler:
                     "tag": "lark_md",
                     "content": f"📊 **Total wallets checked:** {total_wallets}"
                 }
-            }
-        ]
-        
-        # Add Google Sheets info if logged successfully
-        if sheets_logged and batch_id:
-            spreadsheet_id = os.getenv('GOOGLE_SHEET_ID', '')
-            if spreadsheet_id:
-                sheets_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit?gid=1979323493#gid=1979323493"
-                elements.append({
-                    "tag": "div", 
-                    "text": {
-                        "tag": "lark_md",
-                        "content": f"📈 **Data logged to:** [Google Sheets CHECK tab]({sheets_url}) (Batch ID: {batch_id})"
-                    }
-                })
-        
-        # Continue with existing elements...
-        elements.extend([
+            },
+            
             # Separator
             {
                 "tag": "hr"
-            },
-            
-            # Grouped totals section
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "📈 **Totals by Group**"
-                }
-            },
-            
-            # Group totals table header
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "background_style": "grey",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "lark_md",
-                                    "content": "**Group**"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "lark_md",
-                                    "content": "**Total (USDT)**"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # DPP row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "DPP"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{dpp_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # KZG + KZO row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "KZG + KZO"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{kzg_kzo_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # KZP row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "KZP"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{kzp_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # Separator between grouped totals and detailed table
-            {
-                "tag": "hr"
-            },
-            
-            # Detailed table section
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "📋 **Detailed Breakdown**"
-                }
             },
             
             # Table header using column layout
@@ -541,7 +318,7 @@ class CheckHandler:
                     }
                 ]
             }
-        ])
+        ]
         
         # Add data rows using column layout with right-aligned amounts
         for group, wallet_name, balance in wallet_list:
@@ -692,8 +469,6 @@ class CheckHandler:
             },
             "elements": elements
         }
-
-
 
     def _create_checking_card(self, wallet_count: int) -> dict:
         """Create 'checking...' status card."""

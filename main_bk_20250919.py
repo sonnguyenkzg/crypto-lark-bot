@@ -7,7 +7,7 @@ Uses the same beautiful table format as /check command
 PRODUCTION VERSION: Fixed threading and clean formatting with Lark cards
 FIXED: Group display issue - Now correctly uses company information from wallet data
 """
-from bot.services.google_sheets_logger import GoogleSheetsBalanceLogger
+
 import asyncio
 import logging
 import schedule
@@ -36,7 +36,6 @@ class LarkDailyReportScheduler:
         self.topic_manager = None
         self.wallet_service = WalletService()
         self.balance_service = BalanceService()
-        self.sheets_logger = GoogleSheetsBalanceLogger()
         
     async def initialize_lark(self):
         """Initialize Lark API client and topic manager."""
@@ -52,7 +51,7 @@ class LarkDailyReportScheduler:
             logger.error(f"❌ Failed to initialize Lark client: {e}")
             return False
     
-    def create_daily_report_card(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str, sheets_logged: bool = False, batch_id: str = None) -> dict:
+    def create_daily_report_card(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str) -> dict:
         """
         Create daily report card using the same beautiful format as CheckHandler.
         FIXED: Now uses actual company information from wallet data.
@@ -71,20 +70,6 @@ class LarkDailyReportScheduler:
             wallet_list.append((group, wallet_name, balance))
         
         wallet_list.sort(key=lambda x: (x[0], x[1]))
-        
-        # Calculate grouped totals by prefix
-        dpp_total = Decimal('0')
-        kzg_kzo_total = Decimal('0') 
-        kzp_total = Decimal('0')
-        
-        for group, wallet_name, balance in wallet_list:
-            # Check prefix of group name
-            if group.startswith('DPP'):
-                dpp_total += balance
-            elif group.startswith('KZG') or group.startswith('KZO'):
-                kzg_kzo_total += balance
-            elif group.startswith('KZP'):
-                kzp_total += balance
         
         # Build elements with structured table layout (same as CheckHandler)
         elements = [
@@ -109,202 +94,11 @@ class LarkDailyReportScheduler:
                     "tag": "lark_md",
                     "content": f"📊 **Total wallets checked:** {total_wallets}"
                 }
-            }]
+            },
             
-        # Add Google Sheets info if logged successfully
-        if sheets_logged and batch_id:
-            import os
-            spreadsheet_id = os.getenv('GOOGLE_SHEET_ID', '')
-            if spreadsheet_id:
-                sheets_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit?gid=557526287#gid=557526287"
-                elements.append({
-                    "tag": "div", 
-                    "text": {
-                        "tag": "lark_md",
-                        "content": f"📈 **Data logged to:** [Google Sheets DAILY_REPORT tab]({sheets_url}) (Batch ID: {batch_id})"
-                    }
-                })
-
-        elements.extend([
             # Separator
             {
                 "tag": "hr"
-            },
-            
-            # Grouped totals section
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "📈 **Totals by Group**"
-                }
-            },
-            
-            # Group totals table header
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "background_style": "grey",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "lark_md",
-                                    "content": "**Group**"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "lark_md",
-                                    "content": "**Total (USDT)**"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # DPP row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "DPP"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{dpp_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # KZG + KZO row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "KZG + KZO"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{kzg_kzo_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # KZP row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "KZP"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{kzp_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # Separator between grouped totals and detailed table
-            {
-                "tag": "hr"
-            },
-            
-            # Detailed table section
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "📋 **Detailed Breakdown**"
-                }
             },
             
             # Table header using column layout (exact same as CheckHandler)
@@ -360,7 +154,7 @@ class LarkDailyReportScheduler:
                     }
                 ]
             }
-        ])
+        ]
         
         # Add data rows using column layout (exact same as CheckHandler)
         for group, wallet_name, balance in wallet_list:
@@ -497,8 +291,7 @@ class LarkDailyReportScheduler:
             },
             "elements": elements
         }
-
-
+    
     async def send_daily_report(self):
         """Generate and send daily balance report to Lark."""
         try:
@@ -535,18 +328,6 @@ class LarkDailyReportScheduler:
             # Filter successful balances
             successful_balances = {name: balance for name, balance in balances.items() if balance is not None}
             
-            # Log to Google Sheets and track success
-            sheets_logged = False
-            batch_id = None
-            try:
-                success, batch_id = self.sheets_logger.log_balance_check(balances, wallet_data, check_type="scheduled")
-                sheets_logged = success
-                logger.info("✅ Successfully logged daily report to Google Sheets")
-            except Exception as e:
-                logger.warning(f"Failed to log daily report to Google Sheets: {e}")
-                sheets_logged = False
-                batch_id = None
-
             if not successful_balances:
                 logger.warning("No successful balance fetches for daily report")
                 return
@@ -556,7 +337,7 @@ class LarkDailyReportScheduler:
             time_str = gmt7_time.strftime('%Y-%m-%d %H:%M')
             
             # Create daily report card using the same format as CheckHandler - FIXED
-            report_card = self.create_daily_report_card(successful_balances, wallet_data, time_str, sheets_logged, batch_id)
+            report_card = self.create_daily_report_card(successful_balances, wallet_data, time_str)
             
             # Send report to daily reports topic
             async with fresh_api_client:
