@@ -47,7 +47,8 @@ class GoogleSheetsBalanceLogger:
             check_type: "manual" or "scheduled"
         """
         gmt7_time = datetime.now(timezone(timedelta(hours=7)))
-        timestamp = gmt7_time.strftime('%Y-%m-%d %H:%M:%S')
+        date_str = gmt7_time.strftime('%Y-%m-%d')
+        time_str = gmt7_time.strftime('%H:%M:%S')
         
         rows = []
         successful_balances = {name: balance for name, balance in balances.items() if balance is not None}
@@ -59,11 +60,12 @@ class GoogleSheetsBalanceLogger:
             
             row = [
                 batch_id,
-                timestamp,
+                date_str,
+                time_str,
                 wallet_name,
                 company,
                 address,
-                f"{balance:.2f}",  # Format to 2 decimal places
+                f"{balance:.2f}",
                 check_type
             ]
             rows.append(row)
@@ -107,7 +109,7 @@ class GoogleSheetsBalanceLogger:
             self._ensure_headers(sheet_name)
             
             # Append data to sheet
-            range_name = f"{sheet_name}!A:G"
+            range_name = f"{sheet_name}!A:H"
             body = {
                 'values': data_rows,
                 'majorDimension': 'ROWS'
@@ -138,7 +140,8 @@ class GoogleSheetsBalanceLogger:
         try:
             headers = [
                 'Batch ID',
-                'Timestamp', 
+                'Date',
+                'Time', 
                 'Wallet Name',
                 'Company',
                 'Address',
@@ -147,7 +150,7 @@ class GoogleSheetsBalanceLogger:
             ]
             
             # Check if sheet exists and has data
-            range_name = f"{sheet_name}!A1:G1"
+            range_name = f"{sheet_name}!A1:H1"
             try:
                 result = self.sheet.values().get(
                     spreadsheetId=self.spreadsheet_id,
