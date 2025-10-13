@@ -76,6 +76,7 @@ class LarkDailyReportScheduler:
         dpp_total = Decimal('0')
         kzg_kzo_total = Decimal('0') 
         kzp_total = Decimal('0')
+        s5_total = Decimal('0')
         
         for group, wallet_name, balance in wallet_list:
             # Check prefix of group name
@@ -83,8 +84,11 @@ class LarkDailyReportScheduler:
                 dpp_total += balance
             elif group.startswith('KZG') or group.startswith('KZO'):
                 kzg_kzo_total += balance
+            elif group.startswith('S5'):
+                s5_total += balance
             elif group.startswith('KZP'):
                 kzp_total += balance
+            
         
         # Build elements with structured table layout (same as CheckHandler)
         elements = [
@@ -293,6 +297,44 @@ class LarkDailyReportScheduler:
                 ]
             },
             
+            # S5 row
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "plain_text",
+                                    "content": "S5"
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "plain_text",
+                                    "content": f"{s5_total:,.2f}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            },
+
             # Separator between grouped totals and detailed table
             {
                 "tag": "hr"
