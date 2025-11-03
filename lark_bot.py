@@ -390,4 +390,10 @@ if __name__ == "__main__":
     print("=" * 50)
     
     # Run the FastAPI server
-    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8080, 
+        log_level="info",
+        timeout_keep_alive=120
+    )

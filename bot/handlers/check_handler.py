@@ -183,7 +183,7 @@ class CheckHandler:
                 # Use asyncio.to_thread with timeout to prevent hanging
                 balances = await asyncio.wait_for(
                     asyncio.to_thread(self.balance_service.fetch_multiple_balances, address_mapping),
-                    timeout=30.0  # 30 second timeout
+                    timeout=90.0  # 90 second timeout
                 )
             except asyncio.TimeoutError:
                 logger.error("⏰ Balance fetch timed out after 30 seconds")
