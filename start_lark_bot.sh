@@ -38,34 +38,16 @@ check_process() {
 
 # Function to get ngrok tunnel URL
 get_ngrok_url() {
-    local max_attempts=10
-    local attempt=1
-    
-    while [ $attempt -le $max_attempts ]; do
-        if curl -s http://localhost:4040/api/tunnels > /dev/null 2>&1; then
-            local url=$(curl -s http://localhost:4040/api/tunnels | python3 -c "
-import json, sys
-try:
-    data = json.load(sys.stdin)
-    for tunnel in data.get('tunnels', []):
-        if tunnel.get('proto') == 'https':
-            print(tunnel['public_url'])
-            break
-except:
-    pass
-")
-            if [ ! -z "$url" ]; then
-                echo "$url"
-                return 0
-            fi
+    # Load environment if not already loaded
+    if [ -z "$ENVIRONMENT" ]; then
+        if [ -f ".env" ]; then
+            export $(grep "^ENVIRONMENT=" .env | xargs)
         fi
-        
-        echo -e "${YELLOW}   ⏳ Waiting for ngrok tunnel... (attempt $attempt/$max_attempts)${NC}"
-        sleep 2
-        attempt=$((attempt + 1))
-    done
-    
-    return 1
+        ENVIRONMENT=${ENVIRONMENT:-DEV}
+    fi
+
+    # Return fixed domain URL
+    echo "https://kzg-cryptobalance-${ENVIRONMENT}.ngrok.app"
 }
 
 # Stop existing processes
@@ -214,39 +196,57 @@ else:
     fi
 }
 
+# Load environment from .env
+load_environment() {
+    echo -e "${BLUE}🌍 Loading environment configuration...${NC}"
+
+    if [ -f ".env" ]; then
+        export $(grep "^ENVIRONMENT=" .env | xargs)
+    fi
+
+    if [ -z "$ENVIRONMENT" ]; then
+        echo -e "${YELLOW}   ⚠️  ENVIRONMENT not set in .env, defaulting to DEV${NC}"
+        export ENVIRONMENT="DEV"
+    else
+        echo -e "${GREEN}   ✅ Environment: $ENVIRONMENT${NC}"
+    fi
+}
+
 # Start ngrok tunnel
 start_ngrok() {
     echo -e "${PURPLE}🌐 Starting ngrok tunnel...${NC}"
-    
-    # Start ngrok in background
-    nohup ngrok http 8080 > logs/ngrok.log 2>&1 &
+
+    # Construct fixed domain based on environment
+    local NGROK_DOMAIN="kzg-cryptobalance-${ENVIRONMENT}.ngrok.app"
+    local NGROK_PORT=8080
+
+    echo "   🌍 Environment: $ENVIRONMENT"
+    echo "   🔗 Domain: $NGROK_DOMAIN"
+
+    # Start ngrok in background with fixed domain
+    nohup ngrok http $NGROK_PORT --domain $NGROK_DOMAIN > logs/ngrok.log 2>&1 &
     NGROK_PID=$!
-    
-    # Wait for ngrok to start and get URL
+
+    # Wait for ngrok to start
     echo "   ⏳ Waiting for ngrok to initialize..."
     sleep 3
-    
+
     if check_process "ngrok"; then
         echo -e "${GREEN}   ✅ ngrok started (PID: $NGROK_PID)${NC}"
-        
-        # Get the tunnel URL
-        WEBHOOK_URL=$(get_ngrok_url)
-        
-        if [ ! -z "$WEBHOOK_URL" ]; then
-            echo -e "${GREEN}   🔗 Tunnel URL: $WEBHOOK_URL${NC}"
-            echo -e "${PURPLE}   📡 Webhook URL: $WEBHOOK_URL/webhook${NC}"
-            
-            # Store for later display
-            export LARK_WEBHOOK_URL="$WEBHOOK_URL/webhook"
-            return 0
-        else
-            echo -e "${RED}   ❌ Failed to get ngrok URL${NC}"
-            echo "   💡 Check logs: tail -f logs/ngrok.log"
-            return 1
-        fi
+
+        # Construct webhook URL directly (no need to query API)
+        WEBHOOK_URL="https://${NGROK_DOMAIN}"
+
+        echo -e "${GREEN}   🔗 Tunnel URL: $WEBHOOK_URL${NC}"
+        echo -e "${PURPLE}   📡 Webhook URL: $WEBHOOK_URL/webhook${NC}"
+
+        # Store for later display
+        export LARK_WEBHOOK_URL="$WEBHOOK_URL/webhook"
+        return 0
     else
         echo -e "${RED}   ❌ Failed to start ngrok${NC}"
         echo "   💡 Check logs: tail -f logs/ngrok.log"
+        echo "   💡 Ensure ngrok auth token is configured: ngrok config add-authtoken YOUR_TOKEN"
         return 1
     fi
 }
@@ -542,6 +542,7 @@ main() {
     stop_existing
     clear_environment
     setup_environment
+    load_environment
     validate_config
     test_services
     

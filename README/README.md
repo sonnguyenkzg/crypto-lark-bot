@@ -1,6 +1,6 @@
 # Lark Crypto Wallet Monitor Bot
 
-A professional Lark bot that automatically monitors USDT (TRC20) wallet balances and delivers daily reports through interactive cards. Built for enterprise teams managing multiple cryptocurrency wallets across business entities.
+A professional Lark bot that automatically monitors USDT (TRC20 and ERC20) wallet balances and delivers daily reports through interactive cards. Built for enterprise teams managing multiple cryptocurrency wallets across business entities.
 
 ## Features
 
@@ -83,7 +83,9 @@ TRON_API_KEY=xxxxxxxxxxxxxxxxxx
 ### Balance Operations
 - `/check` - Check all wallet balances with formatted table
 - `/check "wallet_name"` - Check specific wallet balance
-- `/check "TRC20_address"` - Check balance by wallet address
+- `/check "TRC20_or_ERC20_address"` - Check balance by wallet address
+  - TRC20 example: `/check "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"`
+  - ERC20 example: `/check "0xdac17f958d2ee523a2206206994597c13d831ec7"`
 - `/check "wallet1" "wallet2"` - Check multiple specific wallets
 
 ### Usage Examples
@@ -158,7 +160,7 @@ lark-crypto-bot/
 
 **Lark API Client**: Async client with automatic token refresh and comprehensive error handling
 
-**Balance Service**: TRC20 USDT balance fetching with address validation and error recovery
+**Balance Service**: TRC20 and ERC20 USDT balance fetching with address validation and error recovery
 
 ## Security
 
@@ -181,11 +183,13 @@ lark-crypto-bot/
 
 ## Wallet Configuration
 
-### Supported Format
-USDT TRC20 wallets only. Addresses must:
-- Start with 'T' character
-- Be exactly 34 characters in length
-- Pass TRC20 validation checks
+### Supported Formats
+- **Supported chains:** USDT on TRC20 (Tron) and ERC20 (Ethereum)
+- **Address formats:**
+  - TRC20: Starts with 'T', 33-35 characters
+  - ERC20: Starts with '0x', 42 characters total
+- Chain type is auto-detected from address format
+- Backward compatible - wallets without chain field default to TRC20
 
 ### Storage Format
 ```json

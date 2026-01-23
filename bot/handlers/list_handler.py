@@ -8,8 +8,8 @@ import logging
 from datetime import datetime
 from typing import Any
 
-# You'll need to create this service following your Telegram bot pattern
 from bot.services.wallet_service import WalletService
+from bot.services.chain_detector import get_chain_emoji
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,9 @@ class ListHandler:
             for wallet in wallets:
                 wallet_name = wallet.get('name', 'Unknown')
                 wallet_address = wallet.get('address', 'Unknown')
-                wallet_list.append(f"• **{wallet_name}**: {wallet_address}")
+                chain = wallet.get('chain', 'TRC20')  # Default to TRC20 for backward compatibility
+                chain_emoji = get_chain_emoji(chain)
+                wallet_list.append(f"• {chain_emoji} **{wallet_name}**: {wallet_address}")
             
             elements.append({
                 "tag": "div",

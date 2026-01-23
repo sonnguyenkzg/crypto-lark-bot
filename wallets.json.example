@@ -1,0 +1,23 @@
+{
+  "COMPANY1-WALLET1": {
+    "company": "COMPANY1",
+    "wallet": "COMPANY1-WALLET1",
+    "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "chain": "TRC20",
+    "created_at": "2026-01-15 03:16:52"
+  },
+  "COMPANY1-WALLET2": {
+    "company": "COMPANY1",
+    "wallet": "COMPANY1-WALLET2",
+    "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "chain": "ERC20",
+    "created_at": "2026-01-23 06:37:40"
+  },
+  "COMPANY2-WALLET1": {
+    "company": "COMPANY2",
+    "wallet": "COMPANY2-WALLET1",
+    "address": "THjvEd1KHUxQgZhGB3AVmoBYAZcBQyy1L",
+    "chain": "TRC20",
+    "created_at": "2026-01-15 03:18:50"
+  }
+}

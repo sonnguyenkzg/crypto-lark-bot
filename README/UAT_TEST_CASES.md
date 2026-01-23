@@ -1,13 +1,13 @@
 # UAT Test Cases - Crypto Wallet Bot
 
 ## Overview
-This document contains User Acceptance Testing (UAT) test cases for the Crypto Wallet Bot system. The bot manages TRON wallet addresses and provides balance checking functionality through Lark messaging platform.
+This document contains User Acceptance Testing (UAT) test cases for the Crypto Wallet Bot system. The bot manages TRON (TRC20) and Ethereum (ERC20) wallet addresses and provides balance checking functionality through Lark messaging platform.
 
 ## Test Environment
 - **Platform**: Lark Bot Interface
 - **Wallet Storage**: JSON file format
-- **Network**: TRON blockchain
-- **Address Type**: TRC20 addresses
+- **Networks**: TRON and Ethereum blockchains
+- **Address Types**: TRC20 (starts with 'T') and ERC20 (starts with '0x') addresses
 
 ---
 
@@ -56,9 +56,9 @@ This document contains User Acceptance Testing (UAT) test cases for the Crypto W
 - **Priority**: High
 
 #### TC-104: Add Invalid Address Format
-**Objective**: Validate TRON address format
+**Objective**: Validate TRC20/ERC20 address format
 - **Command**: `/add "TEST" "TEST WALLET" "InvalidAddress123"`
-- **Expected Result**: ❌ Error message: "Invalid TRC20 address format"
+- **Expected Result**: ❌ Error message: "Invalid address format. Must be TRC20 (starts with 'T') or ERC20 (starts with '0x')"
 - **Priority**: Medium
 
 #### TC-105: Add Missing Arguments

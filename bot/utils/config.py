@@ -47,7 +47,8 @@ class Config:
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     
     # API Configuration
-    TRON_API_KEY = os.getenv("TRON_API_KEY")  # For wallet balance checking
+    TRON_API_KEY = os.getenv("TRON_API_KEY")  # For TRC20 wallet balance checking
+    ETHEREUM_API_KEY = os.getenv("ETHEREUM_API_KEY")  # For ERC20 wallet balance checking
     
     @classmethod
     def _find_wallets_file(cls) -> str:

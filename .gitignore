@@ -126,6 +126,12 @@ Thumbs.db
 logs/
 *.backup.*
 
+# Wallet data (SENSITIVE - contains real wallet addresses)
+wallets.json
+wallets.test.json
+*.pre-erc20.*
+
+# Service account credentials
 *-serviceaccount-key.json
 serviceaccount*.json
 kzg-cryptohash-serviceaccount-key.json

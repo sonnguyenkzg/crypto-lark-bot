@@ -9,11 +9,13 @@ import os
 import logging
 import re
 import asyncio
+from collections import defaultdict
 from decimal import Decimal
 from typing import Any, Dict, List, Tuple
 
 from bot.services.wallet_service import WalletService
 from bot.services.balance_service import BalanceService
+from bot.services.chain_detector import detect_chain_from_address, get_chain_emoji
 
 logger = logging.getLogger(__name__)
 
@@ -74,24 +76,26 @@ class CheckHandler:
             if not input_str:
                 continue
                 
-            # Check if input is a TRC20 address
-            if self.balance_service.validate_trc20_address(input_str):
-                # It's an address - find the wallet name or use address as display
+            # Detect chain type from address format
+            detected_chain = detect_chain_from_address(input_str)
+
+            if detected_chain:
+                # It's a valid address (TRC20 or ERC20) - find the wallet name or use address as display
                 found_wallet = False
                 for wallet_key, wallet_info in wallet_data.items():
                     if wallet_info['address'].lower() == input_str.lower():
-                        # FIXED: Use 'wallet' key instead of 'name'
                         wallets_to_check[wallet_info['wallet']] = wallet_info
                         found_wallet = True
                         break
-                
+
                 if not found_wallet:
                     # Address not in our list - still check it
                     display_name = f"External: {input_str[:10]}...{input_str[-6:]}"
                     wallets_to_check[display_name] = {
-                        'wallet': display_name,  # FIXED: Use 'wallet' key
+                        'wallet': display_name,
                         'address': input_str,
-                        'company': 'External'
+                        'company': 'External',
+                        'chain': detected_chain  # Include detected chain
                     }
             
             else:
@@ -148,7 +152,8 @@ class CheckHandler:
                     wallet_data[wallet_key] = {
                         'wallet': wallet['name'],  # FIXED: Use 'wallet' key instead of 'name'
                         'address': wallet['address'],
-                        'company': company_name  # Use the actual company name from the data structure
+                        'company': company_name,  # Use the actual company name from the data structure
+                        'chain': wallet.get('chain', 'TRC20')  # Include chain information (default to TRC20 for backward compatibility)
                     }
 
             # Parse inputs from command arguments
@@ -173,8 +178,14 @@ class CheckHandler:
             checking_card = self._create_checking_card(len(wallets_to_check))
             await context.topic_manager.send_command_response(checking_card, msg_type="interactive")
 
-            # Create address mapping for balance service
-            address_mapping = {name: info['address'] for name, info in wallets_to_check.items()}
+            # Create wallet mapping for balance service (includes address and chain)
+            wallet_mapping = {
+                name: {
+                    'address': info['address'],
+                    'chain': info.get('chain', 'TRC20')  # Default to TRC20 for backward compatibility
+                }
+                for name, info in wallets_to_check.items()
+            }
 
             # Fetch balances with timeout to prevent hanging
             logger.info(f"Fetching balances for {len(wallets_to_check)} wallets...")
@@ -182,7 +193,7 @@ class CheckHandler:
             try:
                 # Use asyncio.to_thread with timeout to prevent hanging
                 balances = await asyncio.wait_for(
-                    asyncio.to_thread(self.balance_service.fetch_multiple_balances, address_mapping),
+                    asyncio.to_thread(self.balance_service.fetch_multiple_balances, wallet_mapping),
                     timeout=90.0  # 90 second timeout
                 )
             except asyncio.TimeoutError:
@@ -251,23 +262,22 @@ class CheckHandler:
             wallet_list.append((group, wallet_name, balance))
         
         wallet_list.sort(key=lambda x: (x[0], x[1]))
-        
-        # Calculate grouped totals by prefix
-        dpp_total = Decimal('0')
-        kzg_kzo_total = Decimal('0') 
-        kzp_total = Decimal('0')        
-        s5_total = Decimal('0')
-        
+
+        # Calculate grouped totals dynamically
+        company_totals = defaultdict(Decimal)
+
         for group, wallet_name, balance in wallet_list:
-            # Check prefix of group name
-            if group.startswith('DPP'):
-                dpp_total += balance
-            elif group.startswith('KZG') or group.startswith('KZO'):
-                kzg_kzo_total += balance                
-            elif group.startswith('S5'):
-                s5_total += balance
-            elif group.startswith('KZP'):
-                kzp_total += balance
+            # Preserve KZG+KZO merge logic (existing business requirement)
+            if group.startswith('KZG') or group.startswith('KZO'):
+                display_group = "KZG + KZO"
+            else:
+                # For all other companies, use the company name as-is
+                display_group = group
+
+            company_totals[display_group] += balance
+
+        # Sort alphabetically
+        sorted_companies = sorted(company_totals.keys())
         
         # Build elements with structured table layout
         elements = [
@@ -363,123 +373,13 @@ class CheckHandler:
                 ]
             },
             
-            # DPP row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "DPP"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{dpp_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # KZG + KZO row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "KZG + KZO"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{kzg_kzo_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # KZP row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "KZP"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{kzp_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
+        ])
 
+        # Dynamic company rows
+        for company in sorted_companies:
+            total = company_totals[company]
 
-            # S5 row
-            {
+            company_row = {
                 "tag": "column_set",
                 "flex_mode": "none",
                 "columns": [
@@ -493,7 +393,7 @@ class CheckHandler:
                                 "tag": "div",
                                 "text": {
                                     "tag": "plain_text",
-                                    "content": "S5"
+                                    "content": company
                                 }
                             }
                         ]
@@ -508,13 +408,17 @@ class CheckHandler:
                                 "tag": "div",
                                 "text": {
                                     "tag": "plain_text",
-                                    "content": f"{s5_total:,.2f}"
+                                    "content": f"{total:,.2f}"
                                 }
                             }
                         ]
                     }
                 ]
-            },
+            }
+            elements.append(company_row)
+
+        # Continue with separator and detailed breakdown
+        elements.extend([
             
             # Separator between grouped totals and detailed table
             {
@@ -795,7 +699,7 @@ class CheckHandler:
         
         error_content = f"❌ **Wallet name(s) not found:** {', '.join(not_found)}\n\n"
         error_content += f"**Available wallet names:**\n{', '.join(available_names)}\n\n"
-        error_content += "Use **/list** to see all wallets or provide TRC20 addresses directly."
+        error_content += "Use **/list** to see all wallets or provide TRC20/ERC20 addresses directly."
         
         return {
             "config": {

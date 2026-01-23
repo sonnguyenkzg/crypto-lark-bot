@@ -9,6 +9,9 @@ import re
 from typing import Any, Tuple, List, Union
 
 from bot.services.wallet_service import WalletService
+from bot.services.chain_detector import detect_chain_from_address, get_chain_emoji
+from bot.services.tron_validator import TronAddressValidator
+from bot.services.ethereum_validator import EthereumAddressValidator
 
 logger = logging.getLogger(__name__)
 
@@ -93,12 +96,43 @@ class AddHandler:
 
             company, wallet, address = result
 
-            # Attempt to add wallet using wallet service (now async)
-            success, message = await self.wallet_service.add_wallet(company, wallet, address)
-            
+            # Auto-detect chain from address format
+            chain = detect_chain_from_address(address)
+
+            if not chain:
+                error_msg = "❌ **Invalid address format**\n\nMust be:\n• **TRC20**: starts with 'T' (34 characters)\n• **ERC20**: starts with '0x' (42 characters)"
+                error_card = self._create_error_card(error_msg)
+                await context.topic_manager.send_command_response(error_card, msg_type="interactive")
+                logger.warning(f"Invalid address format for user {user_id}: {address[:10]}...")
+                return False
+
+            logger.info(f"Detected chain: {chain} for address {address[:10]}...")
+
+            # Select appropriate validator based on chain
+            if chain == "TRC20":
+                validator = TronAddressValidator()
+            elif chain == "ERC20":
+                validator = EthereumAddressValidator()
+            else:
+                error_msg = f"❌ **Unsupported chain:** {chain}"
+                error_card = self._create_error_card(error_msg)
+                await context.topic_manager.send_command_response(error_card, msg_type="interactive")
+                return False
+
+            # Validate address format and blockchain existence
+            is_valid, validation_message = await validator.validate_address(address)
+            if not is_valid:
+                error_card = self._create_error_card(validation_message)
+                await context.topic_manager.send_command_response(error_card, msg_type="interactive")
+                logger.warning(f"Address validation failed for user {user_id}: {validation_message}")
+                return False
+
+            # Attempt to add wallet using wallet service (now async with chain parameter)
+            success, message = await self.wallet_service.add_wallet(company, wallet, address, chain)
+
             if success:
-                # Create success card matching your screenshot
-                success_card = self._create_success_card(company, wallet, address)
+                # Create success card with chain information
+                success_card = self._create_success_card(company, wallet, address, chain)
                 await context.topic_manager.send_command_response(success_card, msg_type="interactive")
                 logger.info(f"Wallet '{wallet}' added successfully by user {user_id}")
             else:
@@ -116,8 +150,10 @@ class AddHandler:
             await context.topic_manager.send_command_response(fallback_message)
             return False
 
-    def _create_success_card(self, company: str, wallet: str, address: str) -> dict:
-        """Create success card matching your screenshot format."""
+    def _create_success_card(self, company: str, wallet: str, address: str, chain: str) -> dict:
+        """Create success card with chain information."""
+        chain_emoji = get_chain_emoji(chain)
+
         return {
             "config": {
                 "wide_screen_mode": True,
@@ -127,7 +163,7 @@ class AddHandler:
                 "template": "green",
                 "title": {
                     "tag": "plain_text",
-                    "content": "✅ Wallet Added Successfully"
+                    "content": f"✅ Wallet Added Successfully {chain_emoji}"
                 }
             },
             "elements": [
@@ -136,10 +172,10 @@ class AddHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "✅ **Wallet Added Successfully**"
+                        "content": f"✅ **Wallet Added Successfully** {chain_emoji}"
                     }
                 },
-                
+
                 # Details section header
                 {
                     "tag": "div",
@@ -148,7 +184,7 @@ class AddHandler:
                         "content": "📋 **Details:**"
                     }
                 },
-                
+
                 # Details list
                 {
                     "tag": "div",
@@ -157,12 +193,12 @@ class AddHandler:
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"• **Company:** {company}\n• **Wallet:** {wallet}\n• **Address:** {address}"
+                                "content": f"• **Company:** {company}\n• **Wallet:** {wallet}\n• **Chain:** {chain_emoji} {chain}\n• **Address:** {address}"
                             }
                         }
                     ]
                 },
-                
+
                 # Footer suggestion
                 {
                     "tag": "div",
@@ -175,7 +211,7 @@ class AddHandler:
         }
 
     def _create_usage_card(self) -> dict:
-        """Create usage instruction card."""
+        """Create usage instruction card with multi-chain examples."""
         return {
             "config": {
                 "wide_screen_mode": True,
@@ -207,14 +243,14 @@ class AddHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Example:** `/add \"KZP\" \"KZP WDB2\" \"TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS\"`"
+                        "content": "**Examples:**\n• 🟢 **TRC20:** `/add \"KZP\" \"KZP WDB2\" \"TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS\"`\n• 🔷 **ERC20:** `/add \"KZP\" \"KZP ETH1\" \"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb\"`"
                     }
                 },
                 {
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "⚠️ **Notes:**\n• All arguments must be in quotes\n• TRC20 addresses start with 'T' (34 characters)"
+                        "content": "⚠️ **Notes:**\n• All arguments must be in quotes\n• 🟢 TRC20 addresses start with 'T' (34 characters)\n• 🔷 ERC20 addresses start with '0x' (42 characters)\n• Chain is auto-detected from address format"
                     }
                 }
             ]
@@ -256,7 +292,7 @@ class AddHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Example:** `/add \"KZP\" \"KZP WDB2\" \"TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS\"`"
+                        "content": "**Examples:**\n• 🟢 **TRC20:** `/add \"KZP\" \"KZP WDB2\" \"TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS\"`\n• 🔷 **ERC20:** `/add \"KZP\" \"KZP ETH1\" \"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb\"`"
                     }
                 }
             ]

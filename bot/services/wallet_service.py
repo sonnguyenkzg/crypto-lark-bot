@@ -85,10 +85,12 @@ class WalletService:
                 # Try 'wallet' first (new format), fallback to 'name' (old format), then key
                 name = wallet_data.get('wallet', wallet_data.get('name', wallet_key))
                 address = wallet_data.get('address', 'Unknown')
-                
+                chain = wallet_data.get('chain', 'TRC20')  # Default to TRC20 for backward compatibility
+
                 companies[company].append({
                     'name': name,  # Output format uses 'name' for display
                     'address': address,
+                    'chain': chain,  # Include chain information
                     'key': wallet_key
                 })
                 total_count += 1
@@ -107,20 +109,20 @@ class WalletService:
             self.logger.error(f"Error listing wallets: {e}")
             return False, f"Error loading wallet list: {str(e)}"
 
-    async def add_wallet(self, company: str, name: str, address: str) -> Tuple[bool, str]:
-        """Add a new wallet."""
+    async def add_wallet(self, company: str, name: str, address: str, chain: str) -> Tuple[bool, str]:
+        """Add a new wallet with chain type."""
         try:
             wallets = self._load_wallets()
-            
+
             # CRITICAL FIX: Use wallet name directly as key (no underscores)
             wallet_key = name
-            
+
             # Check if wallet already exists (multiple checks)
-            
+
             # 1. Check if exact wallet key exists
             if wallet_key in wallets:
                 return False, f"❌ **Wallet '{name}' already exists**"
-            
+
             # 2. Check if wallet name already exists (case-insensitive search through all entries)
             for existing_key, existing_data in wallets.items():
                 # Handle both old format ('name') and new format ('wallet')
@@ -128,7 +130,7 @@ class WalletService:
                 if existing_name.lower() == name.lower():
                     existing_company = existing_data.get('company', 'Unknown')
                     return False, f"❌ **Wallet name '{name}' already exists in {existing_company}**"
-            
+
             # 3. Check if address already exists
             for existing_key, existing_data in wallets.items():
                 if existing_data.get('address') == address:
@@ -136,27 +138,27 @@ class WalletService:
                     existing_name = existing_data.get('wallet', existing_data.get('name', 'Unknown'))
                     existing_company = existing_data.get('company', 'Unknown')
                     return False, f"❌ **Address already used by '{existing_name}' in {existing_company}**"
-            
+
             # Validate address format and existence on blockchain
-            is_valid, validation_message = await self.tron_validator.validate_address(address)
-            if not is_valid:
-                return False, validation_message
-            
-            # CRITICAL FIX: Add wallet with 'wallet' field (not 'name')
+            # Note: Validation is now handled by the handler using appropriate validator per chain
+            # This method just stores the wallet data
+
+            # Add wallet with chain field
             wallets[wallet_key] = {
                 'company': company,
-                'wallet': name,    # FIXED: Use 'wallet' field to match your JSON structure
+                'wallet': name,
                 'address': address,
+                'chain': chain,  # NEW: Store chain type
                 'created_at': self._get_current_time()
             }
-            
+
             # Save to file
             if self._save_wallets(wallets):
-                self.logger.info(f"Added wallet: {company} - {name}")
-                return True, f"✅ **Wallet added successfully!**\n\n🏢 **Company:** {company}\n📝 **Name:** {name}\n📍 **Address:** `{address}`"
+                self.logger.info(f"Added wallet: {company} - {name} ({chain})")
+                return True, f"✅ **Wallet added successfully!**\n\n🏢 **Company:** {company}\n📝 **Name:** {name}\n🔗 **Chain:** {chain}\n📍 **Address:** `{address}`"
             else:
                 return False, "❌ **Failed to save wallet data.**"
-                
+
         except Exception as e:
             self.logger.error(f"Error adding wallet: {e}")
             return False, f"❌ **Error adding wallet:** {str(e)}"
@@ -237,20 +239,29 @@ class WalletService:
         from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-# Expected wallet.json structure after fixes:
+# Expected wallet.json structure with multi-chain support:
 """
 {
   "KZP TH 1": {
     "company": "KZP",
-    "wallet": "KZP TH 1", 
+    "wallet": "KZP TH 1",
     "address": "TF2GVKwjVchpEWs1TonJW8yP6HAcvAvG93",
+    "chain": "TRC20",
     "created_at": "2024-01-01 12:00:00"
   },
-  "TEST WALLET 1": {
-    "company": "TEST",
-    "wallet": "TEST WALLET 1",
-    "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+  "KZP ETH 1": {
+    "company": "KZP",
+    "wallet": "KZP ETH 1",
+    "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+    "chain": "ERC20",
     "created_at": "2024-01-01 12:01:00"
+  },
+  "LEGACY WALLET": {
+    "company": "TEST",
+    "wallet": "LEGACY WALLET",
+    "address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "created_at": "2024-01-01 12:02:00"
+    # Note: chain field missing = defaults to TRC20 for backward compatibility
   }
 }
 """

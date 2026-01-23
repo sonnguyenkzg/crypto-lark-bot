@@ -130,7 +130,7 @@ class HelpHandler:
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": "• All arguments must be in quotes\n• TRC20 addresses start with 'T' (34 characters)\n• Balance reports sent via scheduled messages at midnight GMT+7\n• Only authorized team members can use commands"
+                                "content": "• All arguments must be in quotes\n• **TRC20** addresses start with 'T' (34 characters)\n• **ERC20** addresses start with '0x' (42 characters)\n• Chain type auto-detected from address format\n• Balance reports sent via scheduled messages at midnight GMT+7\n• Only authorized team members can use commands"
                             }
                         }
                     ]
@@ -196,7 +196,9 @@ class HelpHandler:
 
 **⚠️ Notes:**
 • All arguments must be in quotes
-• TRC20 addresses start with 'T' (34 characters)
+• **TRC20** addresses start with 'T' (34 characters)
+• **ERC20** addresses start with '0x' (42 characters)
+• Chain type auto-detected from address format
 • Balance reports sent via scheduled messages at midnight GMT+7
 • Only authorized team members can use commands
 

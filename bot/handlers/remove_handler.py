@@ -11,6 +11,7 @@ from typing import Any, Tuple, Union
 
 from bot.services.wallet_service import WalletService
 from bot.services.balance_service import BalanceService
+from bot.services.chain_detector import get_chain_emoji
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +177,9 @@ class RemoveHandler:
         """Create success card with information about what was removed."""
         company = wallet_info.get('company', 'Unknown')
         wallet_address = wallet_info.get('address', 'Unknown')
-        
+        chain = wallet_info.get('chain', 'TRC20')  # Default to TRC20 for backward compatibility
+        chain_emoji = get_chain_emoji(chain)
+
         # Show what identifier was used
         identifier_type = "address" if self.balance_service.validate_trc20_address(original_identifier) else "name"
         
@@ -207,7 +210,7 @@ class RemoveHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": f"📋 **Details:**\n• **Company:** {company}\n• **Wallet:** {wallet_name}\n• **Address:** {wallet_address[:10]}...{wallet_address[-6:]}"
+                        "content": f"📋 **Details:**\n• **Company:** {company}\n• **Wallet:** {wallet_name}\n• **Chain:** {chain_emoji} {chain}\n• **Address:** {wallet_address[:10]}...{wallet_address[-6:]}"
                     }
                 },
                 
