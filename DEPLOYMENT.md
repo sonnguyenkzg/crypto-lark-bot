@@ -30,11 +30,38 @@ cat .env | grep ENVIRONMENT
 
 **Required settings:**
 - `ENVIRONMENT=PROD` (not DEV)
-- All API keys configured for production
 - `WALLETS_FILE=wallets.json` (production wallet file)
 - `NGROK_KZG_TOKEN=<your_company_token>`
 
+**API Keys (CRITICAL for ERC20 support):**
+- `TRON_API_KEY=<your_tron_api_key>` - For TRC20 balance fetching
+- `ETHEREUM_API_KEY=<your_etherscan_api_key>` - **Required for ERC20 wallets**
+  - Get from: https://etherscan.io/apis
+  - Free tier: 5 calls/second, 100,000 calls/day
+  - Without this key, ERC20 wallet balance checks will fail
+
+**Google Sheets:**
+- `GOOGLE_CREDENTIALS_FILE=<your-serviceaccount-key.json>`
+- `GOOGLE_SHEET_ID=<your_sheet_id>`
+
 The ngrok domain will automatically be: `https://kzg-cryptobalance-PROD.ngrok.app`
+
+**Example `.env` snippet:**
+```bash
+ENVIRONMENT=PROD
+WALLETS_FILE=wallets.json
+
+# API Keys
+TRON_API_KEY=814d3c05-2443-48b5-a3c6-436fef221844
+ETHEREUM_API_KEY=9EACTRUAQ31F6HX2M43RY1VGHGPJU5ITY5
+
+# ngrok
+NGROK_KZG_TOKEN=35junoeOf8keNnUmAviL77dXP9z_7De2e4wGXn1gDWrzHaAZv
+
+# Google Sheets
+GOOGLE_CREDENTIALS_FILE=kzg-cryptohash-serviceaccount-key.json
+GOOGLE_SHEET_ID=19ynwsi2bWhGhjv9zRlIwdLzenuC82of3ZeioYUUWtVI
+```
 
 ### 3. Restart Services
 
@@ -194,8 +221,45 @@ ps aux | grep lark_bot.py
 ```
 
 ### Balance Fetching Issues
-- **TRC20 errors**: Check `TRON_API_KEY` in `.env`
-- **ERC20 errors**: Check `ETHEREUM_API_KEY` in `.env` (Etherscan API key)
+
+**TRC20 Balance Errors:**
+```bash
+# Check TRON API key is set
+grep TRON_API_KEY .env
+
+# Test TRC20 wallet directly
+python -c "from bot.services.balance_service import BalanceService; bs = BalanceService(); print(bs.fetch_trc20_balance('TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'))"
+```
+
+**ERC20 Balance Errors (CRITICAL):**
+
+If ERC20 wallets fail with errors like "Invalid API key" or timeout issues:
+
+1. **Verify Ethereum API key is set:**
+   ```bash
+   grep ETHEREUM_API_KEY .env
+   ```
+
+2. **Get Etherscan API key (if missing):**
+   - Go to: https://etherscan.io/apis
+   - Sign up for free account
+   - Create API key (free tier: 5 calls/sec, 100k calls/day)
+   - Add to `.env`: `ETHEREUM_API_KEY=YOUR_KEY_HERE`
+
+3. **Test ERC20 wallet directly:**
+   ```bash
+   python -c "from bot.services.balance_service import BalanceService; bs = BalanceService(); print(bs.fetch_erc20_balance('0xdac17f958d2ee523a2206206994597c13d831ec7'))"
+   ```
+
+4. **Common errors:**
+   - `"Invalid API Key"` - API key not set or incorrect
+   - `"Max rate limit reached"` - Too many requests (upgrade plan or wait)
+   - `Timeout errors` - Network issues or Etherscan down
+
+**Without ETHEREUM_API_KEY:**
+- All ERC20 balance checks will fail
+- Daily reports will show `None` for ERC20 wallets
+- /check command will error for ERC20 addresses
 
 ### Google Sheets Not Logging
 ```bash
@@ -246,14 +310,16 @@ If you encounter issues:
 
 - [ ] Git pull completed successfully
 - [ ] `.env` file configured for PROD
+- [ ] **`ETHEREUM_API_KEY` set in `.env`** (critical for ERC20 support)
+- [ ] `TRON_API_KEY` set in `.env`
 - [ ] Services restarted with `./start_lark_bot.sh restart`
 - [ ] Lark webhook URL updated in developer console
 - [ ] Daily report test passed (`python main.py test`)
 - [ ] KZDW appears in report totals
-- [ ] ERC20 wallets fetching correctly
+- [ ] **ERC20 wallets fetching correctly** (verify with test)
 - [ ] Bot responding to /check command
 - [ ] All services running (`./start_lark_bot.sh status`)
-- [ ] Logs monitored for errors
+- [ ] Logs monitored for errors (no "Invalid API Key" errors)
 - [ ] Google Sheets sync working
 
 ---
