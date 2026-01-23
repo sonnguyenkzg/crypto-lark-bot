@@ -16,6 +16,7 @@ import threading
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Dict
+from collections import defaultdict
 
 from bot.utils.config import Config
 from bot.services.lark_api_client import LarkAPIClient
@@ -71,25 +72,23 @@ class LarkDailyReportScheduler:
             wallet_list.append((group, wallet_name, balance))
         
         wallet_list.sort(key=lambda x: (x[0], x[1]))
-        
-        # Calculate grouped totals by prefix
-        dpp_total = Decimal('0')
-        kzg_kzo_total = Decimal('0') 
-        kzp_total = Decimal('0')
-        s5_total = Decimal('0')
-        
+
+        # Calculate grouped totals dynamically (SAME AS CHECK HANDLER)
+        company_totals = defaultdict(Decimal)
+
         for group, wallet_name, balance in wallet_list:
-            # Check prefix of group name
-            if group.startswith('DPP'):
-                dpp_total += balance
-            elif group.startswith('KZG') or group.startswith('KZO'):
-                kzg_kzo_total += balance
-            elif group.startswith('S5'):
-                s5_total += balance
-            elif group.startswith('KZP'):
-                kzp_total += balance
-            
-        
+            # Preserve KZG+KZO merge logic (existing business requirement)
+            if group.startswith('KZG') or group.startswith('KZO'):
+                display_group = "KZG + KZO"
+            else:
+                # For all other companies, use the company name as-is
+                display_group = group
+
+            company_totals[display_group] += balance
+
+        # Sort alphabetically
+        sorted_companies = sorted(company_totals.keys())
+
         # Build elements with structured table layout (same as CheckHandler)
         elements = [
             # Header info - Modified for daily report
@@ -181,160 +180,52 @@ class LarkDailyReportScheduler:
                         ]
                     }
                 ]
-            },
-            
-            # DPP row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "DPP"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{dpp_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # KZG + KZO row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "KZG + KZO"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{kzg_kzo_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # KZP row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "KZP"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{kzp_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
-            
-            # S5 row
-            {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "S5"
-                                }
-                            }
-                        ]
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": f"{s5_total:,.2f}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
+            }
+        ])
 
+        # Dynamic company rows (SAME AS CHECK HANDLER)
+        for company in sorted_companies:
+            total = company_totals[company]
+
+            company_row = {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "plain_text",
+                                    "content": company
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "plain_text",
+                                    "content": f"{total:,.2f}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+            elements.append(company_row)
+
+        elements.extend([
             # Separator between grouped totals and detailed table
             {
                 "tag": "hr"
@@ -565,14 +456,21 @@ class LarkDailyReportScheduler:
                     wallet_data[wallet_key] = {
                         'name': wallet['name'],
                         'address': wallet['address'],
+                        'chain': wallet.get('chain', 'TRC20'),  # Include chain info, default to TRC20
                         'company': company_name  # Use the actual company name from the data structure
                     }
-            
-            # Prepare wallets for balance checking - FIXED to preserve full wallet info
-            address_mapping = {info['name']: info['address'] for info in wallet_data.values()}
-            
-            # Fetch all balances (same as CheckHandler but synchronous for scheduler)
-            balances = self.balance_service.fetch_multiple_balances(address_mapping)
+
+            # Prepare wallets for balance checking with chain info (SAME AS CHECK HANDLER)
+            wallets_to_check = {}
+            for wallet_name, info in wallet_data.items():
+                wallets_to_check[wallet_name] = {
+                    'address': info['address'],
+                    'chain': info.get('chain', 'TRC20'),  # Default to TRC20 for backward compatibility
+                    'company': info['company']
+                }
+
+            # Fetch all balances with chain support (same as CheckHandler but synchronous for scheduler)
+            balances = self.balance_service.fetch_multiple_balances(wallets_to_check)
             
             # Filter successful balances
             successful_balances = {name: balance for name, balance in balances.items() if balance is not None}
