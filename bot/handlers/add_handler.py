@@ -12,6 +12,7 @@ from bot.services.wallet_service import WalletService
 from bot.services.chain_detector import detect_chain_from_address, get_chain_emoji
 from bot.services.tron_validator import TronAddressValidator
 from bot.services.ethereum_validator import EthereumAddressValidator
+from bot.services.command_args import parse_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -24,47 +25,37 @@ class AddHandler:
         self.enabled = True
         self.wallet_service = WalletService()
 
-    def extract_quoted_strings(self, text: str) -> List[str]:
-        """
-        Extract quoted strings from text.
-        Supports both single and double quotes.
-        """
-        # Pattern to match quoted strings (either single or double quotes)
-        pattern = r'["\']([^"\']*)["\']'
-        matches = re.findall(pattern, text)
-        return matches
-
     def parse_quoted_arguments(self, text: str) -> Tuple[bool, Union[List[str], str]]:
         """
-        Parse text with quoted arguments.
-        Expects exactly 3 quoted strings: "company" "wallet" "address"
-        
+        Parse text with bracketed or quoted arguments.
+        Expects exactly 3 arguments: [company] or "company", [wallet] or "wallet", [address] or "address"
+
         Args:
             text: Command text from user
-            
+
         Returns:
             Tuple[bool, Union[List[str], str]]: (success, [company, wallet, address] or error_message)
         """
         if not text or not text.strip():
             return False, "❌ Missing arguments"
-        
-        # Extract quoted strings
-        matches = self.extract_quoted_strings(text)
-        
+
+        # Parse arguments using the shared tokenizer (supports [ ] and " " and ' ')
+        matches, _ = parse_arguments(text)
+
         if len(matches) != 3:
-            return False, f"❌ Expected 3 quoted arguments, found {len(matches)}"
-        
-        company, wallet, address = matches
-        
+            return False, f"❌ Expected 3 arguments in [ ] (or quotes), found {len(matches)}"
+
+        company, wallet, address = (m.strip() for m in matches)
+
         # Validate none are empty
-        if not company.strip():
+        if not company:
             return False, "❌ Company cannot be empty"
-        if not wallet.strip():
-            return False, "❌ Wallet name cannot be empty"  
-        if not address.strip():
+        if not wallet:
+            return False, "❌ Wallet name cannot be empty"
+        if not address:
             return False, "❌ Address cannot be empty"
-        
-        return True, [company.strip(), wallet.strip(), address.strip()]
+
+        return True, [company, wallet, address]
 
     async def handle(self, context: Any) -> bool:
         try:
