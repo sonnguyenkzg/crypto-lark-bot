@@ -5,7 +5,6 @@ Adds new wallets with quoted argument parsing
 """
 
 import logging
-import re
 from typing import Any, Tuple, List, Union
 
 from bot.services.wallet_service import WalletService
@@ -19,8 +18,8 @@ logger = logging.getLogger(__name__)
 class AddHandler:
     def __init__(self):
         self.name = "add"
-        self.description = "Add a new wallet (requires 3 quoted arguments)"
-        self.usage = '/add "company" "wallet_name" "address"'
+        self.description = "Add a new wallet (3 arguments: company, wallet name, address)"
+        self.usage = '/add [company] [wallet_name] [address]'
         self.aliases = ["create", "new"]
         self.enabled = True
         self.wallet_service = WalletService()
@@ -46,14 +45,6 @@ class AddHandler:
             return False, f"❌ Expected 3 arguments in [ ] (or quotes), found {len(matches)}"
 
         company, wallet, address = (m.strip() for m in matches)
-
-        # Validate none are empty
-        if not company:
-            return False, "❌ Company cannot be empty"
-        if not wallet:
-            return False, "❌ Wallet name cannot be empty"
-        if not address:
-            return False, "❌ Address cannot be empty"
 
         return True, [company, wallet, address]
 
@@ -227,21 +218,21 @@ class AddHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Usage:** `/add \"company\" \"wallet_name\" \"address\"`"
+                        "content": "**Usage:** `/add [company] [wallet_name] [address]`"
                     }
                 },
                 {
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Examples:**\n• 🟢 **TRC20:** `/add \"KZP\" \"KZP WDB2\" \"TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS\"`\n• 🔷 **ERC20:** `/add \"KZP\" \"KZP ETH1\" \"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb\"`"
+                        "content": "**Examples:**\n• 🟢 **TRC20:** `/add [KZP] [KZP WDB2] [TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS]`\n• 🔷 **ERC20:** `/add [KZP] [KZP ETH1] [0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb]`"
                     }
                 },
                 {
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "⚠️ **Notes:**\n• All arguments must be in quotes\n• 🟢 TRC20 addresses start with 'T' (34 characters)\n• 🔷 ERC20 addresses start with '0x' (42 characters)\n• Chain is auto-detected from address format"
+                        "content": "⚠️ **Notes:**\n• Wrap each argument in [ ] (quotes also work)\n• 🟢 TRC20 addresses start with 'T' (34 characters)\n• 🔷 ERC20 addresses start with '0x' (42 characters)\n• Chain is auto-detected from address format"
                     }
                 }
             ]
@@ -276,14 +267,14 @@ class AddHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Usage:** `/add \"company\" \"wallet_name\" \"address\"`"
+                        "content": "**Usage:** `/add [company] [wallet_name] [address]`"
                     }
                 },
                 {
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Examples:**\n• 🟢 **TRC20:** `/add \"KZP\" \"KZP WDB2\" \"TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS\"`\n• 🔷 **ERC20:** `/add \"KZP\" \"KZP ETH1\" \"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb\"`"
+                        "content": "**Examples:**\n• 🟢 **TRC20:** `/add [KZP] [KZP WDB2] [TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS]`\n• 🔷 **ERC20:** `/add [KZP] [KZP ETH1] [0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb]`"
                     }
                 }
             ]
