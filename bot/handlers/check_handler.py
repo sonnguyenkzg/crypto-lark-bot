@@ -188,6 +188,16 @@ class CheckHandler:
                     return False
                 return await self._handle_historical(context, date_str, other, wallet_data)
 
+            # A bare, un-bracketed ISO date (e.g. `/check 2026-07-15`) parses to no tokens
+            # and would silently run a full LIVE check -- the user could mistake today's
+            # balances for that date's. Detect the bare date and ask them to bracket it.
+            if not date_str and had_bare:
+                m = re.search(r'\b\d{4}-\d{2}-\d{2}\b', command_args)
+                if m:
+                    await context.topic_manager.send_command_response(
+                        self._create_bracket_hint_card(m.group(0)), msg_type="interactive")
+                    return False
+
             # LIVE path (unchanged): inputs now come from the shared token parser
             # (parse_arguments/split_date) instead of parse_check_arguments, so
             # [bracket] wallet/company names work the same as "quoted" ones.
@@ -395,23 +405,46 @@ class CheckHandler:
             existing_roster = [w for w in roster if self._existed_by(w.get("created_at"), date_str)]
             targets, fuzzy, not_found = self._filter_roster(existing_roster, groups, names)
             rows, unavailable = [], []
-            for w in targets:
-                try:
-                    bal = await asyncio.wait_for(
-                        asyncio.to_thread(self.balance_service.get_balance_at,
-                                          w["address"], w.get("chain", "TRC20"), cutoff_ms),
-                        timeout=120.0)
-                except asyncio.TimeoutError:
-                    # A single stuck chain lookup must not sink the whole multi-wallet
-                    # response -> treat it the same as a None result: unavailable, noted,
-                    # excluded from the total (never silently dropped).
-                    logger.error(f"Reconstruction timed out for {w['wallet']} ({w.get('chain', 'TRC20')})")
-                    bal = None
-                if bal is None:
-                    unavailable.append(w["wallet"])
-                else:
-                    rows.append({"name": w["wallet"], "company": w["company"],
-                                 "address": w["address"], "balance": bal, "source": "reconstructed"})
+            # PROD SAFETY: reconstruction runs while holding the module-level
+            # _CHECK_EXECUTION_LOCK, which blocks every other /check. Bound it hard:
+            # cap concurrency (don't hammer chain APIs / rate limits) AND cap total
+            # wall-clock; anything unfinished in time -> "unavailable", never dropped.
+            RECON_CONCURRENCY = 8
+            RECON_PER_WALLET_TIMEOUT = 25.0
+            RECON_TOTAL_BUDGET = 90.0
+            sem = asyncio.Semaphore(RECON_CONCURRENCY)
+
+            async def _recon_one(w):
+                async with sem:
+                    try:
+                        bal = await asyncio.wait_for(
+                            asyncio.to_thread(self.balance_service.get_balance_at,
+                                              w["address"], w.get("chain", "TRC20"), cutoff_ms),
+                            timeout=RECON_PER_WALLET_TIMEOUT)
+                    except Exception as e:
+                        logger.error(f"Reconstruction failed for {w['wallet']} "
+                                     f"({w.get('chain', 'TRC20')}): {e}")
+                        bal = None
+                    return w, bal
+
+            if targets:
+                recon_tasks = [asyncio.ensure_future(_recon_one(w)) for w in targets]
+                done, pending = await asyncio.wait(recon_tasks, timeout=RECON_TOTAL_BUDGET)
+                for t in pending:
+                    t.cancel()
+                finished = set()
+                for t in done:
+                    w, bal = t.result()
+                    finished.add(canonical_address(w["address"]))
+                    if bal is None:
+                        unavailable.append(w["wallet"])
+                    else:
+                        rows.append({"name": w["wallet"], "company": w["company"],
+                                     "address": w["address"], "balance": bal,
+                                     "source": "reconstructed"})
+                for w in targets:            # unfinished when the budget elapsed
+                    if canonical_address(w["address"]) not in finished:
+                        unavailable.append(w["wallet"])
             view = {"rows": rows, "missing": [], "not_found": not_found, "fuzzy": fuzzy,
                     "unavailable": unavailable}
             source = f"Reconstructed from chain — no snapshot for {date_str}"
@@ -971,12 +1004,18 @@ class CheckHandler:
         }
 
     def _create_bracket_hint_card(self, date_str: str) -> dict:
-        """Create hint card for `/check [date] <un-bracketed filter>`.
+        """Create hint card for two un-bracketed cases:
+        1. `/check 2026-07-15` (bare date, no brackets at all) -- would otherwise silently
+           fall through to a full LIVE check, which the user could mistake for that date's
+           balances.
+        2. `/check [2026-07-15] KZP` (bracketed date + un-bracketed filter) -- the filter
+           word is silently dropped by parse_arguments and could show an unfiltered result
+           the user didn't ask for.
 
         parse_arguments only recognizes [bracket]/"quote"/'quote' tokens; a bare
         (un-delimited) word is silently dropped and we're only told THAT it happened, not
-        what it was. Rather than guess and possibly show an unfiltered result the user
-        didn't ask for, we stop here and ask them to re-wrap the filter.
+        what it was. Rather than guess in either case, we stop here and ask the user to
+        wrap the whole command -- date included -- in brackets.
         """
         return {
             "config": {
@@ -987,7 +1026,7 @@ class CheckHandler:
                 "template": "orange",
                 "title": {
                     "tag": "plain_text",
-                    "content": "⚠️ Wrap Every Filter in [ ]"
+                    "content": "⚠️ Wrap Dates and Filters in [ ]"
                 }
             },
             "elements": [
@@ -996,8 +1035,9 @@ class CheckHandler:
                     "text": {
                         "tag": "lark_md",
                         "content": "⚠️ **Part of your command wasn't recognized and was ignored.**\n\n"
-                                   f"Wrap every filter in brackets, e.g. `/check [{date_str}] [KZP]` "
-                                   f"or `/check [{date_str}] [KZP 96G1]`."
+                                   f"Wrap the date (and any filter) in brackets, e.g. `/check [{date_str}]` "
+                                   f"for a date on its own, or `/check [{date_str}] [KZP]` to also filter "
+                                   "by company or wallet name."
                     }
                 }
             ]
