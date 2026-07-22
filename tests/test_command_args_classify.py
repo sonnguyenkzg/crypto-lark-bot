@@ -19,3 +19,7 @@ def test_resolve_fuzzy_near_miss():
 
 def test_resolve_fuzzy_total_miss():
     assert resolve_fuzzy("ZZZ QQQ", NAMES) == []
+
+def test_resolve_fuzzy_case_insensitive():
+    # a near-miss typed in a DIFFERENT case than the stored name still resolves
+    assert "KZP 96G1" in resolve_fuzzy("kzp 96g2", NAMES)

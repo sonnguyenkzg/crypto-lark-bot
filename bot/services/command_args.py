@@ -65,12 +65,15 @@ def classify_tokens(tokens, companies, wallet_names):
 
 def resolve_fuzzy(token, candidates, n=3, cutoff=0.6):
     """Closest wallet names to `token`: case-insensitive substring hits first,
-    then difflib close matches. Deduped, order-preserving, capped at n."""
+    then case-insensitive difflib close matches. Deduped, order-preserving, capped at n."""
     if not token or not candidates:
         return []
     tl = token.lower()
     subs = [c for c in candidates if tl in c.lower() or c.lower() in tl]
-    close = get_close_matches(token, candidates, n=n, cutoff=cutoff)
+    lower_map = {}
+    for c in candidates:
+        lower_map.setdefault(c.lower(), c)   # first original per lowercased form
+    close = [lower_map[m] for m in get_close_matches(tl, list(lower_map.keys()), n=n, cutoff=cutoff)]
     out = []
     for c in list(subs) + list(close):
         if c not in out:
