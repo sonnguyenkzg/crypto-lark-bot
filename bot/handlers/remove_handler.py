@@ -2,7 +2,7 @@
 """
 Remove Handler for Lark Bot - Following Telegram Bot Pattern
 Removes wallets with single quoted argument parsing
-FIXED: Now accepts both wallet names and TRON addresses
+Accepts wallet names and TRC20/ERC20 addresses
 """
 
 import logging
@@ -10,7 +10,6 @@ import re
 from typing import Any, Tuple, Union
 
 from bot.services.wallet_service import WalletService
-from bot.services.balance_service import BalanceService
 from bot.services.chain_detector import get_chain_emoji, detect_chain_from_address, canonical_address
 
 logger = logging.getLogger(__name__)
@@ -23,7 +22,6 @@ class RemoveHandler:
         self.aliases = ["delete", "del"]
         self.enabled = True
         self.wallet_service = WalletService()
-        self.balance_service = BalanceService()  # For address validation
 
     def extract_quoted_strings(self, text: str) -> list:
         """Extract quoted strings from text."""
@@ -277,7 +275,7 @@ class RemoveHandler:
             error_content += f"\n\n💡 **Did you mean:** `{suggestions}`"
         
         error_content += "\n\n📋 Use **/list** to see all available wallets"
-        error_content += "\n\n💡 **Tip:** You can remove by wallet name or TRON address"
+        error_content += "\n\n💡 **Tip:** You can remove by wallet name or address (TRC20 or ERC20)"
 
         return {
             "config": {
