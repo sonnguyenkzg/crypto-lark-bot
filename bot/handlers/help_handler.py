@@ -78,7 +78,7 @@ class HelpHandler:
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": "• **/start** - Start the bot and check connection\n• **/help** - Show available commands and their descriptions\n• **/list** - Show all configured wallets\n• **/add \"company\" \"wallet\" \"address\"** - Add new wallet\n• **/remove \"wallet_name\"** - Remove wallet\n• **/check** - Check all wallet balances\n• **/check \"wallet_name\"** - Check specific wallet balance\n• **/check \"wallet1\" \"wallet2\"** - Check multiple specific wallets"
+                                "content": "• **/start** - Start the bot and check connection\n• **/help** - Show available commands and their descriptions\n• **/list** - Show all configured wallets\n• **/add [company] [wallet] [address]** - Add new wallet\n• **/remove [name or address]** - Remove wallet by name or address\n• **/check** - Check all wallet balances\n• **/check [2026-07-15]** - Balances on that date\n• **/check [2026-07-15] [KZP]** - One company on that date\n• **/check [2026-07-15] [KZP 96G1]** - One wallet on that date (typo-tolerant)"
                             }
                         }
                     ]
@@ -104,7 +104,7 @@ class HelpHandler:
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": "• **/add \"KZP\" \"KZP WDB2\" \"TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS\"**\n• **/remove \"KZP WDB2\"**\n• **/list**\n• **/check**\n• **/check \"KZP 96G1\"**\n• **/check \"KZP 96G1\" \"KZP WDB2\"**"
+                                "content": "• **/add [KZP] [KZP WDB2] [TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS]**\n• **/remove [KZP WDB2]**\n• **/check [2026-07-15]**\n• **/check [2026-07-15] [KZP]**\n• **/check [2026-07-15] [KZP 96G1]**\n• **/list**\n• **/check**"
                             }
                         }
                     ]
@@ -130,7 +130,7 @@ class HelpHandler:
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": "• All arguments must be in quotes\n• **TRC20** addresses start with 'T' (34 characters)\n• **ERC20** addresses start with '0x' (42 characters)\n• Chain type auto-detected from address format\n• Balance reports sent via scheduled messages at midnight GMT+7\n• Only authorized team members can use commands"
+                                "content": "• Wrap each argument in [ ]; quotes also work\n• Dates are YYYY-MM-DD\n• **TRC20** addresses start with 'T' (34 characters)\n• **ERC20** addresses start with '0x' (42 characters)\n• Chain type auto-detected from address format\n• Balance reports sent via scheduled messages at midnight GMT+7\n• Only authorized team members can use commands"
                             }
                         }
                     ]
@@ -174,28 +174,31 @@ class HelpHandler:
 
 **🔐 Wallet Management:**
 • **/start** - Start the bot and check connection
-• **/help** - Show available commands and their descriptions  
+• **/help** - Show available commands and their descriptions
 • **/list** - Show all configured wallets
-• **/add "company" "wallet" "address"** - Add new wallet
-• **/remove "wallet_name"** - Remove wallet
+• **/add [company] [wallet] [address]** - Add new wallet
+• **/remove [name or address]** - Remove wallet by name or address
 • **/check** - Check all wallet balances
-• **/check "wallet_name"** - Check specific wallet balance
-• **/check "wallet1" "wallet2"** - Check multiple specific wallets
+• **/check [2026-07-15]** - Balances on that date
+• **/check [2026-07-15] [KZP]** - One company on that date
+• **/check [2026-07-15] [KZP 96G1]** - One wallet on that date (typo-tolerant)
 
 ---
 
 **📝 Examples:**
-• **/add "KZP" "KZP WDB2" "TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS"**
-• **/remove "KZP WDB2"**
+• **/add [KZP] [KZP WDB2] [TEhmKXCPgX6LyjQ3t9skuSyUQBxwaWfY4KS]**
+• **/remove [KZP WDB2]**
+• **/check [2026-07-15]**
+• **/check [2026-07-15] [KZP]**
+• **/check [2026-07-15] [KZP 96G1]**
 • **/list**
 • **/check**
-• **/check "KZP 96G1"**
-• **/check "KZP 96G1" "KZP WDB2"**
 
 ---
 
 **⚠️ Notes:**
-• All arguments must be in quotes
+• Wrap each argument in [ ]; quotes also work
+• Dates are YYYY-MM-DD
 • **TRC20** addresses start with 'T' (34 characters)
 • **ERC20** addresses start with '0x' (42 characters)
 • Chain type auto-detected from address format
