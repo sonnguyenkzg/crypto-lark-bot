@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 class BalanceService:
     """Service for checking USDT wallet balances across multiple chains (TRC20, ERC20)."""
 
+    TRANSFER_MAX_PAGES = 200          # ~10k TRC20 / ~20k ERC20 transfers; matches Tronscan's 10k cap
+    TRANSFER_FETCH_DEADLINE = 25.0    # seconds; a single wallet's fetch may not exceed this
+
     def __init__(self):
         # Configuration constants
         self.API_TIMEOUT = 10  # seconds for API requests
@@ -275,7 +278,14 @@ class BalanceService:
                 if key:
                     headers["TRON-PRO-API-KEY"] = key
                 start = 0
+                pages = 0
+                _deadline = _time.monotonic() + self.TRANSFER_FETCH_DEADLINE
                 while True:
+                    if pages >= self.TRANSFER_MAX_PAGES or _time.monotonic() > _deadline:
+                        logger.warning(f"TRC20 transfer window too large to reconstruct safely "
+                                       f"for {address[:10]}... (>{self.TRANSFER_MAX_PAGES} pages / "
+                                       f"{self.TRANSFER_FETCH_DEADLINE}s) -> unavailable")
+                        return None
                     params = {"relatedAddress": address, "contract_address": self.USDT_TRC20_CONTRACT,
                               "start_timestamp": cutoff_ms + 1, "end_timestamp": now_ms,
                               "limit": 50, "start": start, "sort": "-timestamp"}
@@ -283,6 +293,7 @@ class BalanceService:
                                      params=params, headers=headers, timeout=self.API_TIMEOUT)
                     r.raise_for_status()
                     ts = r.json().get("token_transfers", []) or []
+                    pages += 1
                     for t in ts:
                         out.append({
                             "from": t.get("from_address", ""), "to": t.get("to_address", ""),
@@ -300,7 +311,14 @@ class BalanceService:
                     return None
                 cutoff_s = cutoff_ms // 1000
                 page = 1
+                pages = 0
+                _deadline = _time.monotonic() + self.TRANSFER_FETCH_DEADLINE
                 while True:
+                    if pages >= self.TRANSFER_MAX_PAGES or _time.monotonic() > _deadline:
+                        logger.warning(f"ERC20 transfer window too large to reconstruct safely "
+                                       f"for {address[:10]}... (>{self.TRANSFER_MAX_PAGES} pages / "
+                                       f"{self.TRANSFER_FETCH_DEADLINE}s) -> unavailable")
+                        return None
                     params = {"chainid": "1", "module": "account", "action": "tokentx",
                               "contractaddress": self.USDT_ERC20_CONTRACT, "address": address,
                               "page": page, "offset": 100, "sort": "desc", "apikey": key}
@@ -308,6 +326,7 @@ class BalanceService:
                     r.raise_for_status()
                     d = r.json()
                     txs = d.get("result") or []
+                    pages += 1
                     if d.get("status") != "1" or not txs:
                         break
                     stop = False

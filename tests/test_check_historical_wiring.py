@@ -131,7 +131,6 @@ def test_reconstruction_timeout_marks_unavailable_not_dropped():
     import time
     h = _handler(monkeysnapshot={})           # no snapshot -> reconstruction path
     h.RECON_TOTAL_BUDGET = 0.3                 # shrink so the slow lookup can't finish
-    h.RECON_PER_WALLET_TIMEOUT = 0.3
     def slow(addr, chain, cutoff):
         time.sleep(2)                          # exceeds budget -> task pending -> cancelled
         return Decimal("1.00")

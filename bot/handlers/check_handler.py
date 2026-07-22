@@ -9,6 +9,7 @@ import os
 import logging
 import re
 import asyncio
+import concurrent.futures
 from collections import defaultdict
 from decimal import Decimal
 from typing import Any, Dict, List, Tuple
@@ -26,7 +27,6 @@ _CHECK_EXECUTION_LOCK = False
 
 class CheckHandler:
     RECON_CONCURRENCY = 8
-    RECON_PER_WALLET_TIMEOUT = 25.0
     RECON_TOTAL_BUDGET = 90.0
 
     def __init__(self):
@@ -385,46 +385,44 @@ class CheckHandler:
             existing_roster = [w for w in roster if self._existed_by(w.get("created_at"), date_str)]
             targets, fuzzy, not_found = self._filter_roster(existing_roster, groups, names)
             rows, unavailable = [], []
-            sem = asyncio.Semaphore(self.RECON_CONCURRENCY)
-
-            async def _recon_one(w):
-                async with sem:
-                    try:
-                        return w, await asyncio.wait_for(
-                            asyncio.to_thread(self.balance_service.get_balance_at,
-                                              w["address"], w.get("chain", "TRC20"), cutoff_ms),
-                            timeout=self.RECON_PER_WALLET_TIMEOUT)
-                    except Exception as e:
-                        logger.error(f"Reconstruction failed for {w['wallet']} "
-                                     f"({w.get('chain', 'TRC20')}): {e}")
-                        return w, None
-
             if targets:
-                # PROD SAFETY: this runs while holding the module-level _CHECK_EXECUTION_LOCK,
-                # which blocks every other /check. Bounded hard: the Semaphore caps concurrent
-                # chain lookups to RECON_CONCURRENCY (so at most that many threads ever run, and
-                # any left in-flight after a per-wallet timeout drain in the background bounded by
-                # the same cap), and one outer asyncio.wait budget caps total lock-hold time
-                # regardless of roster size. Completion is tracked by TASK identity (never by
-                # address) so a wallet is always in exactly one of rows/unavailable -- never
-                # silently lost, even if two roster rows shared an address.
-                task_to_w = {}
-                for w in targets:
-                    t = asyncio.ensure_future(_recon_one(w))
-                    task_to_w[t] = w
-                done, pending = await asyncio.wait(
-                    list(task_to_w.keys()), timeout=self.RECON_TOTAL_BUDGET)
-                for t in pending:
-                    t.cancel()
-                    unavailable.append(task_to_w[t]["wallet"])   # unfinished within budget
-                for t in done:
-                    w, bal = t.result()
-                    if bal is None:
-                        unavailable.append(w["wallet"])
-                    else:
-                        rows.append({"name": w["wallet"], "company": w["company"],
-                                     "address": w["address"], "balance": bal,
-                                     "source": "reconstructed"})
+                # PROD SAFETY: run reconstruction on a DEDICATED bounded thread pool -- never the
+                # default executor the LIVE /check path uses -- so stale/slow gap-date threads can
+                # never saturate it and starve live checks. One outer budget caps total lock-hold;
+                # each transfer fetch is itself page/time-capped in balance_service so a single
+                # thread can't run unbounded. Completion is tracked by task identity, so every
+                # wallet lands in rows XOR unavailable exactly once.
+                loop = asyncio.get_event_loop()
+                recon_pool = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.RECON_CONCURRENCY, thread_name_prefix="recon")
+                try:
+                    fut_to_w = {}
+                    for w in targets:
+                        f = loop.run_in_executor(
+                            recon_pool, self.balance_service.get_balance_at,
+                            w["address"], w.get("chain", "TRC20"), cutoff_ms)
+                        fut_to_w[f] = w
+                    done, pending = await asyncio.wait(
+                        list(fut_to_w.keys()), timeout=self.RECON_TOTAL_BUDGET)
+                    for f in pending:
+                        f.cancel()                       # queued futures never run
+                        unavailable.append(fut_to_w[f]["wallet"])
+                    for f in done:
+                        w = fut_to_w[f]
+                        try:
+                            bal = f.result()
+                        except Exception as e:
+                            logger.error(f"Reconstruction failed for {w['wallet']} "
+                                         f"({w.get('chain', 'TRC20')}): {e}")
+                            bal = None
+                        if bal is None:
+                            unavailable.append(w["wallet"])
+                        else:
+                            rows.append({"name": w["wallet"], "company": w["company"],
+                                         "address": w["address"], "balance": bal,
+                                         "source": "reconstructed"})
+                finally:
+                    recon_pool.shutdown(wait=False)      # never block the event loop
             view = {"rows": rows, "missing": [], "not_found": not_found, "fuzzy": fuzzy,
                     "unavailable": unavailable}
             source = f"Reconstructed from chain — no snapshot for {date_str}"

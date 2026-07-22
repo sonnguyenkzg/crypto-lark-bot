@@ -40,3 +40,16 @@ def test_reconstruct_none_when_fetch_fails(monkeypatch):
 def test_net_self_transfer_is_zero():
     # wallet sending USDT to itself: credit + debit must cancel to 0
     assert B._net_from_transfers([tx(ME, ME, "50.00")], ME) == Decimal("0")
+
+def test_fetch_transfers_page_cap_returns_none(monkeypatch):
+    b = BalanceService()
+    b.TRANSFER_MAX_PAGES = 3
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            # always a FULL page (len==50, never <50) so the loop never self-terminates
+            return {"token_transfers": [{"from_address": "X", "to_address": "TAAA",
+                    "quant": "1000000", "finalResult": "SUCCESS", "contractRet": "SUCCESS"}] * 50}
+    monkeypatch.setattr("bot.services.balance_service.requests.get", lambda *a, **k: _Resp())
+    # incomplete window (more than the cap) -> None, and it must NOT hang
+    assert b._fetch_transfers_after("TAAA", "TRC20", 0) is None
