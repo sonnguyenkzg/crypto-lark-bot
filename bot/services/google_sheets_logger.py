@@ -3,9 +3,11 @@ import logging
 logger = logging.getLogger(__name__)
 import os
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from bot.services.chain_detector import canonical_address
 
 class GoogleSheetsBalanceLogger:
     """Logger for balance check results to Google Sheets"""
@@ -177,6 +179,47 @@ class GoogleSheetsBalanceLogger:
                 
         except Exception as e:
             logger.warning(f"Could not ensure headers for {sheet_name}: {e}")
+
+    def _parse_amount(self, s) -> Decimal:
+        """Parse amount string to Decimal, stripping commas."""
+        try:
+            return Decimal(str(s).replace(",", "").strip() or "0")
+        except Exception:
+            return Decimal("0")
+
+    def _build_snapshot_from_rows(self, rows, date_str):
+        """Union of all that-date batches, keyed by canonical_address, keeping the
+        EARLIEST batch value per address (a later intraday run only adds wallets)."""
+        snap = {}
+        for r in rows:
+            # cols: 0 batch,1 date,2 time,3 wallet,4 company,5 address,6 balance,7 type
+            if len(r) < 7 or r[1] != date_str:
+                continue
+            key = canonical_address(r[5])
+            if not key:
+                continue
+            prev = snap.get(key)
+            if prev is None or r[0] < prev["batch_id"]:   # earliest batch_id wins
+                snap[key] = {
+                    "wallet_name": r[3],
+                    "company": r[4] if len(r) > 4 else "Unknown",
+                    "address": r[5],
+                    "balance": self._parse_amount(r[6]),
+                    "batch_id": r[0],
+                    "time": r[2] if len(r) > 2 else "",
+                }
+        return snap
+
+    def get_snapshot_for_date(self, date_str):
+        """Read DAILY_REPORT and return the assembled snapshot for date_str."""
+        if not self.credentials_file or not self.spreadsheet_id:
+            return {}
+        if not self._initialize_service():
+            return {}
+        res = self.sheet.values().get(
+            spreadsheetId=self.spreadsheet_id, range="DAILY_REPORT!A:H").execute()
+        rows = res.get("values", [])
+        return self._build_snapshot_from_rows(rows[1:] if rows else [], date_str)
 
 
 # Integration code for CheckHandler (add to your check_handler.py)
