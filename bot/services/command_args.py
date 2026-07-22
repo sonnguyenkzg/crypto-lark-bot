@@ -2,7 +2,7 @@ import re
 from datetime import datetime
 
 # One [bracket] OR "double" OR 'single' quoted token
-_TOKEN_RE = re.compile(r'\[([^\[\]]*)\]|"([^"]*)"|\'([^\']*)\'')
+_TOKEN_RE = re.compile(r'\[([^\[\]"\']*)\]|"([^\[\]"\']*)"|\'([^\[\]"\']*)\'')
 _ISO_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 

@@ -23,3 +23,9 @@ def test_is_valid_iso_date():
 def test_split_date_first_iso_token_wins():
     assert split_date(["2026-07-15", "KZP", "KZP 96G1"]) == ("2026-07-15", ["KZP", "KZP 96G1"])
     assert split_date(["KZP 96G1"]) == (None, ["KZP 96G1"])
+
+def test_mixed_delimiters_flagged_not_corrupted():
+    # a token wrapped in BOTH styles must not silently corrupt; the leftover
+    # delimiter must raise the bare-word flag so the handler can hint the user
+    assert parse_arguments('["KZP"]') == (["KZP"], True)
+    assert parse_arguments('"[KZP]"') == (["KZP"], True)
