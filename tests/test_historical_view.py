@@ -45,3 +45,24 @@ def test_not_found_name():
     s = snap(("TAAA","KZP 96G1","KZP","10"))
     v = H.build_historical_view(s, ROSTER, [], ["ZZZ QQQ"], "2026-07-15")
     assert v["not_found"] == ["ZZZ QQQ"]
+
+def test_completeness_unparseable_created_at_still_expected():
+    # a malformed created_at must NOT silently drop a wallet from the completeness guard
+    roster = [{"wallet": "Eth One", "company": "KZO", "address": "0xabc",
+               "chain": "ERC20", "created_at": "TBD"}]
+    s = snap(("TAAA", "KZP 96G1", "KZP", "10"))     # 0xabc absent from snapshot
+    v = H.build_historical_view(s, roster, [], [], "2026-07-15")
+    assert "Eth One" in v["missing"]
+
+def test_wallet_created_after_date_not_missing():
+    roster = [{"wallet": "New One", "company": "KZP", "address": "TZZZ",
+               "chain": "TRC20", "created_at": "2026-07-20 00:00:00"}]
+    s = snap(("TAAA", "KZP 96G1", "KZP", "10"))     # TZZZ didn't exist yet
+    v = H.build_historical_view(s, roster, [], [], "2026-07-15")
+    assert v["missing"] == []
+
+def test_group_filter_multiple_or():
+    s = snap(("TAAA", "KZP 96G1", "KZP", "10"), ("TBBB", "KZO A 1", "KZO", "20"),
+             ("TCCC", "S5 One", "S5", "30"))
+    v = H.build_historical_view(s, ROSTER, ["KZP", "KZO"], [], "2026-07-15")
+    assert {r["name"] for r in v["rows"]} == {"KZP 96G1", "KZO A 1"}   # S5 excluded

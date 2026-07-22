@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Tuple
 from bot.services.wallet_service import WalletService
 from bot.services.balance_service import BalanceService
 from bot.services.chain_detector import detect_chain_from_address, get_chain_emoji, canonical_address
-from bot.services.command_args import classify_tokens, resolve_fuzzy
+from bot.services.command_args import resolve_fuzzy
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -247,17 +247,19 @@ class CheckHandler:
 
     def _existed_by(self, created_at, date_str):
         """True if a wallet with this created_at existed on/before date_str.
-        Missing/unparseable created_at -> True (safe direction: expect it)."""
+        Missing OR unparseable created_at -> True (safe direction: still expect it,
+        so a snapshot-missing wallet still surfaces in the completeness guard)."""
         if not created_at:
             return True
+        prefix = str(created_at)[:10]
         try:
-            return created_at[:10] <= date_str
-        except Exception:
-            return True
+            datetime.strptime(prefix, "%Y-%m-%d")   # must be a real ISO date
+        except (ValueError, TypeError):
+            return True                              # unparseable -> safe direction
+        return prefix <= date_str
 
     def build_historical_view(self, snapshot, current_roster, groups, names, date_str):
         """Pure: turn a snapshot + filters into rows + warnings. See interface block."""
-        snap_names = [v["wallet_name"] for v in snapshot.values()]
         # 1. choose which snapshot entries to show
         selected = list(snapshot.values())
         if groups:
@@ -295,7 +297,7 @@ class CheckHandler:
                 if not self._existed_by(w.get("created_at"), date_str):
                     continue
                 if canonical_address(w.get("address", "")) not in snap_addrs:
-                    missing.append(w.get("wallet") or w.get("name"))
+                    missing.append(w.get("wallet"))
         return {"rows": rows, "missing": missing, "not_found": not_found, "fuzzy": fuzzy}
 
     def _create_balance_table_card_with_sheets_info(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str, not_found: List[str], sheets_logged: bool = False, batch_id: str = None) -> dict:        
