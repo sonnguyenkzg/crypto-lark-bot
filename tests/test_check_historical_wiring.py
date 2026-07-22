@@ -125,3 +125,19 @@ def test_valid_date_no_snapshot_reconstructs_and_marks_unavailable():
     blob = _blob(cards[-1])
     assert "7.00" in blob
     assert "Eth One" in blob
+
+
+def test_reconstruction_timeout_marks_unavailable_not_dropped():
+    import time
+    h = _handler(monkeysnapshot={})           # no snapshot -> reconstruction path
+    h.RECON_TOTAL_BUDGET = 0.3                 # shrink so the slow lookup can't finish
+    h.RECON_PER_WALLET_TIMEOUT = 0.3
+    def slow(addr, chain, cutoff):
+        time.sleep(2)                          # exceeds budget -> task pending -> cancelled
+        return Decimal("1.00")
+    h.balance_service.get_balance_at = slow
+    cards = _run(h, ["[2026-07-15]"])
+    blob = _blob(cards[-1])
+    # BOTH roster wallets must surface as unavailable, neither silently dropped
+    assert "KZP 96G1" in blob
+    assert "Eth One" in blob

@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 _CHECK_EXECUTION_LOCK = False
 
 class CheckHandler:
+    RECON_CONCURRENCY = 8
+    RECON_PER_WALLET_TIMEOUT = 25.0
+    RECON_TOTAL_BUDGET = 90.0
+
     def __init__(self):
         self.name = "check"
         self.description = "Check wallet balances (all wallets or specific ones)"
@@ -34,30 +38,6 @@ class CheckHandler:
         self.wallet_service = WalletService()
         self.balance_service = BalanceService()
         self.sheets_logger = GoogleSheetsBalanceLogger()
-
-    def extract_quoted_strings(self, text: str) -> List[str]:
-        """Extract quoted strings from text."""
-        pattern = r'["\']([^"\']*)["\']'
-        matches = re.findall(pattern, text)
-        return matches
-
-    def parse_check_arguments(self, text: str) -> List[str]:
-        """
-        Parse quoted arguments from check command text.
-        
-        Args:
-            text: Command arguments from user
-            
-        Returns:
-            List[str]: List of parsed wallet names/addresses
-        """
-        if not text or not text.strip():
-            return []
-        
-        # Extract quoted strings
-        quoted_inputs = self.extract_quoted_strings(text)
-        
-        return quoted_inputs
 
     def resolve_wallets_to_check(self, inputs: List[str], wallet_data: Dict) -> Tuple[Dict[str, Dict], List[str]]:
         """
@@ -405,46 +385,46 @@ class CheckHandler:
             existing_roster = [w for w in roster if self._existed_by(w.get("created_at"), date_str)]
             targets, fuzzy, not_found = self._filter_roster(existing_roster, groups, names)
             rows, unavailable = [], []
-            # PROD SAFETY: reconstruction runs while holding the module-level
-            # _CHECK_EXECUTION_LOCK, which blocks every other /check. Bound it hard:
-            # cap concurrency (don't hammer chain APIs / rate limits) AND cap total
-            # wall-clock; anything unfinished in time -> "unavailable", never dropped.
-            RECON_CONCURRENCY = 8
-            RECON_PER_WALLET_TIMEOUT = 25.0
-            RECON_TOTAL_BUDGET = 90.0
-            sem = asyncio.Semaphore(RECON_CONCURRENCY)
+            sem = asyncio.Semaphore(self.RECON_CONCURRENCY)
 
             async def _recon_one(w):
                 async with sem:
                     try:
-                        bal = await asyncio.wait_for(
+                        return w, await asyncio.wait_for(
                             asyncio.to_thread(self.balance_service.get_balance_at,
                                               w["address"], w.get("chain", "TRC20"), cutoff_ms),
-                            timeout=RECON_PER_WALLET_TIMEOUT)
+                            timeout=self.RECON_PER_WALLET_TIMEOUT)
                     except Exception as e:
                         logger.error(f"Reconstruction failed for {w['wallet']} "
                                      f"({w.get('chain', 'TRC20')}): {e}")
-                        bal = None
-                    return w, bal
+                        return w, None
 
             if targets:
-                recon_tasks = [asyncio.ensure_future(_recon_one(w)) for w in targets]
-                done, pending = await asyncio.wait(recon_tasks, timeout=RECON_TOTAL_BUDGET)
+                # PROD SAFETY: this runs while holding the module-level _CHECK_EXECUTION_LOCK,
+                # which blocks every other /check. Bounded hard: the Semaphore caps concurrent
+                # chain lookups to RECON_CONCURRENCY (so at most that many threads ever run, and
+                # any left in-flight after a per-wallet timeout drain in the background bounded by
+                # the same cap), and one outer asyncio.wait budget caps total lock-hold time
+                # regardless of roster size. Completion is tracked by TASK identity (never by
+                # address) so a wallet is always in exactly one of rows/unavailable -- never
+                # silently lost, even if two roster rows shared an address.
+                task_to_w = {}
+                for w in targets:
+                    t = asyncio.ensure_future(_recon_one(w))
+                    task_to_w[t] = w
+                done, pending = await asyncio.wait(
+                    list(task_to_w.keys()), timeout=self.RECON_TOTAL_BUDGET)
                 for t in pending:
                     t.cancel()
-                finished = set()
+                    unavailable.append(task_to_w[t]["wallet"])   # unfinished within budget
                 for t in done:
                     w, bal = t.result()
-                    finished.add(canonical_address(w["address"]))
                     if bal is None:
                         unavailable.append(w["wallet"])
                     else:
                         rows.append({"name": w["wallet"], "company": w["company"],
                                      "address": w["address"], "balance": bal,
                                      "source": "reconstructed"})
-                for w in targets:            # unfinished when the budget elapsed
-                    if canonical_address(w["address"]) not in finished:
-                        unavailable.append(w["wallet"])
             view = {"rows": rows, "missing": [], "not_found": not_found, "fuzzy": fuzzy,
                     "unavailable": unavailable}
             source = f"Reconstructed from chain — no snapshot for {date_str}"
