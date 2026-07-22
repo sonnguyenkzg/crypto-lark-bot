@@ -1,5 +1,6 @@
 import re
 from datetime import datetime
+from difflib import get_close_matches
 
 # One [bracket] OR "double" OR 'single' quoted token
 _TOKEN_RE = re.compile(r'\[([^\[\]"\']*)\]|"([^\[\]"\']*)"|\'([^\[\]"\']*)\'')
@@ -44,3 +45,34 @@ def split_date(tokens):
         else:
             rest.append(t)
     return date, rest
+
+
+def classify_tokens(tokens, companies, wallet_names):
+    """Split tokens into (groups, names) by content.
+
+    A token that matches a company name (case-insensitive) is a group;
+    the group interpretation wins even if it also matches a wallet name.
+    """
+    comp_lower = {c.lower() for c in companies}
+    groups, names = [], []
+    for t in tokens:
+        if t.lower() in comp_lower:
+            groups.append(t)
+        else:
+            names.append(t)
+    return groups, names
+
+
+def resolve_fuzzy(token, candidates, n=3, cutoff=0.6):
+    """Closest wallet names to `token`: case-insensitive substring hits first,
+    then difflib close matches. Deduped, order-preserving, capped at n."""
+    if not token or not candidates:
+        return []
+    tl = token.lower()
+    subs = [c for c in candidates if tl in c.lower() or c.lower() in tl]
+    close = get_close_matches(token, candidates, n=n, cutoff=cutoff)
+    out = []
+    for c in list(subs) + list(close):
+        if c not in out:
+            out.append(c)
+    return out[:n]
