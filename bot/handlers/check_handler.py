@@ -16,8 +16,8 @@ from typing import Any, Dict, List, Tuple
 from bot.services.wallet_service import WalletService
 from bot.services.balance_service import BalanceService
 from bot.services.chain_detector import detect_chain_from_address, get_chain_emoji, canonical_address
-from bot.services.command_args import resolve_fuzzy
-from datetime import datetime
+from bot.services.command_args import resolve_fuzzy, parse_arguments, split_date, is_valid_iso_date, classify_tokens
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -135,9 +135,25 @@ class CheckHandler:
 
             user_id = context.sender_id
             command_args = " ".join(context.args) if context.args else ""
-            
+
             logger.info(f"Check command received from user ID: {user_id}")
             logger.info(f"Command args: '{command_args}'")
+
+            # Parse [bracket]/"quote"/'quote' tokens once, up front, and split off a
+            # leading ISO date if present -> routes to the LIVE path or the historical path.
+            tokens, had_bare = parse_arguments(command_args)
+            date_str, other = split_date(tokens)
+            # A bare (undelimited) token is silently DROPPED by parse_arguments -- it never
+            # reaches `tokens`/`other`, so we can flag THAT it happened (had_bare) but not
+            # say what it was. For the LIVE (no-date) path this matches pre-Task-8 behaviour
+            # exactly (parse_check_arguments only ever recognized "quoted" strings too, so a
+            # bare word already silently fell back to "check all wallets" before this diff)
+            # -- unchanged on purpose, handled further down where `inputs = other` is used.
+            # For the HISTORICAL path there is no such legacy precedent: silently proceeding
+            # with an empty/partial filter could return a materially different, unfiltered
+            # result than the user asked for (e.g. `/check [2026-07-15] KZP` would silently
+            # show ALL companies, not just KZP), so that combination is handled explicitly
+            # right before the historical dispatch below instead of guessing.
 
             # Load all wallets
             success, wallet_list_data = self.wallet_service.list_wallets()
@@ -155,12 +171,28 @@ class CheckHandler:
                         'wallet': wallet['name'],  # FIXED: Use 'wallet' key instead of 'name'
                         'address': wallet['address'],
                         'company': company_name,  # Use the actual company name from the data structure
-                        'chain': wallet.get('chain', 'TRC20')  # Include chain information (default to TRC20 for backward compatibility)
+                        'chain': wallet.get('chain', 'TRC20'),  # Include chain information (default to TRC20 for backward compatibility)
+                        'created_at': wallet.get('created_at')  # Used by /check [date]'s completeness guard (_existed_by)
                     }
 
-            # Parse inputs from command arguments
-            inputs = self.parse_check_arguments(command_args)
-            
+            # Date present -> historical branch (Task 8); wallet_data doubles as the
+            # current roster used for the completeness guard / reconstruction fallback.
+            if date_str:
+                if had_bare:
+                    # Some part of the command was un-bracketed and got silently dropped by
+                    # parse_arguments; proceeding here could silently show an unfiltered
+                    # result instead of what the user actually asked to filter to, so stop
+                    # and ask them to re-wrap it rather than guess.
+                    await context.topic_manager.send_command_response(
+                        self._create_bracket_hint_card(date_str), msg_type="interactive")
+                    return False
+                return await self._handle_historical(context, date_str, other, wallet_data)
+
+            # LIVE path (unchanged): inputs now come from the shared token parser
+            # (parse_arguments/split_date) instead of parse_check_arguments, so
+            # [bracket] wallet/company names work the same as "quoted" ones.
+            inputs = other
+
             if not inputs:
                 # Check all wallets - return full wallet info
                 # FIXED: Use 'wallet' key instead of 'name'
@@ -258,21 +290,30 @@ class CheckHandler:
             return True                              # unparseable -> safe direction
         return prefix <= date_str
 
-    def build_historical_view(self, snapshot, current_roster, groups, names, date_str):
-        """Pure: turn a snapshot + filters into rows + warnings. See interface block."""
-        # 1. choose which snapshot entries to show
-        selected = list(snapshot.values())
+    def _filter_roster(self, items, groups, names, name_key="wallet"):
+        """Group + exact/fuzzy name filter, SHARED by both historical paths:
+        - build_historical_view calls it against snapshot entries (name_key='wallet_name')
+        - the reconstruction gap-path calls it against the current roster (name_key='wallet',
+          the default)
+        A token that matches a company name selects that whole group; a name token is
+        matched exactly first, then falls back to a fuzzy match (recorded in `fuzzy`) so a
+        near-miss still resolves instead of silently returning nothing; a name with no
+        match at all -> `not_found`, never silently dropped.
+
+        Returns (selected_items, fuzzy_map, not_found_list).
+        """
+        selected = list(items)
         if groups:
             gl = {g.lower() for g in groups}
-            selected = [v for v in selected if v["company"].lower() in gl]
+            selected = [v for v in selected if v.get("company", "").lower() in gl]
         fuzzy = {}
         not_found = []
         if names:
             picked = {}
-            base = selected if groups else list(snapshot.values())
-            base_names = [v["wallet_name"] for v in base]
+            base = selected if groups else list(items)
+            base_names = [v[name_key] for v in base]
             for want in names:
-                exact = [v for v in base if v["wallet_name"].lower() == want.lower()]
+                exact = [v for v in base if v[name_key].lower() == want.lower()]
                 if exact:
                     for v in exact:
                         picked[v["address"]] = v
@@ -281,11 +322,18 @@ class CheckHandler:
                 if close:
                     fuzzy[want] = close
                     for v in base:
-                        if v["wallet_name"] in close:
+                        if v[name_key] in close:
                             picked[v["address"]] = v
                 else:
                     not_found.append(want)
             selected = list(picked.values())
+        return selected, fuzzy, not_found
+
+    def build_historical_view(self, snapshot, current_roster, groups, names, date_str):
+        """Pure: turn a snapshot + filters into rows + warnings. See interface block."""
+        # 1. choose which snapshot entries to show
+        selected, fuzzy, not_found = self._filter_roster(
+            list(snapshot.values()), groups, names, name_key="wallet_name")
         rows = [{"name": v["wallet_name"], "company": v["company"],
                  "address": v["address"], "balance": v["balance"], "source": "snapshot"}
                 for v in selected]
@@ -299,6 +347,78 @@ class CheckHandler:
                 if canonical_address(w.get("address", "")) not in snap_addrs:
                     missing.append(w.get("wallet"))
         return {"rows": rows, "missing": missing, "not_found": not_found, "fuzzy": fuzzy}
+
+    async def _handle_historical(self, context: Any, date_str: str, other_tokens: List[str],
+                                  wallet_data: Dict) -> bool:
+        """Route for `/check [date] ...`.
+
+        Validates the date, classifies the remaining tokens into group/name filters,
+        then either renders the DAILY_REPORT snapshot for that date (if one was logged)
+        or -- on a gap day with no snapshot -- reconstructs the current roster's
+        balances as of {date_str} 00:01 GMT+7 from on-chain transfer history.
+        """
+        if not is_valid_iso_date(date_str):
+            await context.topic_manager.send_command_response(
+                self._create_bad_date_card(date_str), msg_type="interactive")
+            return False
+
+        gmt7_today = datetime.now(timezone(timedelta(hours=7))).strftime("%Y-%m-%d")
+        if date_str > gmt7_today:
+            await context.topic_manager.send_command_response(
+                self._create_future_date_card(date_str), msg_type="interactive")
+            return False
+
+        companies = sorted({info["company"] for info in wallet_data.values()})
+        names_all = [info["wallet"] for info in wallet_data.values()]
+        groups, names = classify_tokens(other_tokens, companies, names_all)
+
+        # current roster (wallet_service already loaded into wallet_data)
+        roster = [{"wallet": i["wallet"], "company": i["company"], "address": i["address"],
+                   "chain": i.get("chain", "TRC20"), "created_at": i.get("created_at")}
+                  for i in wallet_data.values()]
+
+        # get_snapshot_for_date already catches its own errors and returns {} on failure.
+        snapshot = self.sheets_logger.get_snapshot_for_date(date_str)
+
+        if snapshot:
+            view = self.build_historical_view(snapshot, roster, groups, names, date_str)
+            source = f"Daily snapshot (DAILY_REPORT) — {date_str} · {len(snapshot)} wallets"
+            card = self._create_historical_card(view, date_str, source, reconstructed=False)
+        else:
+            # Gap: no snapshot logged for this date -- reconstruct the current roster's
+            # balances as of date_str 00:01 GMT+7 from on-chain transfer history.
+            cutoff_ms = int(datetime.strptime(date_str + " 00:01:00", "%Y-%m-%d %H:%M:%S")
+                            .replace(tzinfo=timezone(timedelta(hours=7))).timestamp() * 1000)
+            # Same "did this wallet exist yet" guard as the snapshot path's completeness
+            # check (_existed_by): a wallet added AFTER date_str has nothing meaningful to
+            # reconstruct for that date, so it's excluded here rather than fabricated.
+            existing_roster = [w for w in roster if self._existed_by(w.get("created_at"), date_str)]
+            targets, fuzzy, not_found = self._filter_roster(existing_roster, groups, names)
+            rows, unavailable = [], []
+            for w in targets:
+                try:
+                    bal = await asyncio.wait_for(
+                        asyncio.to_thread(self.balance_service.get_balance_at,
+                                          w["address"], w.get("chain", "TRC20"), cutoff_ms),
+                        timeout=120.0)
+                except asyncio.TimeoutError:
+                    # A single stuck chain lookup must not sink the whole multi-wallet
+                    # response -> treat it the same as a None result: unavailable, noted,
+                    # excluded from the total (never silently dropped).
+                    logger.error(f"Reconstruction timed out for {w['wallet']} ({w.get('chain', 'TRC20')})")
+                    bal = None
+                if bal is None:
+                    unavailable.append(w["wallet"])
+                else:
+                    rows.append({"name": w["wallet"], "company": w["company"],
+                                 "address": w["address"], "balance": bal, "source": "reconstructed"})
+            view = {"rows": rows, "missing": [], "not_found": not_found, "fuzzy": fuzzy,
+                    "unavailable": unavailable}
+            source = f"Reconstructed from chain — no snapshot for {date_str}"
+            card = self._create_historical_card(view, date_str, source, reconstructed=True)
+
+        await context.topic_manager.send_command_response(card, msg_type="interactive")
+        return True
 
     def _create_balance_table_card_with_sheets_info(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str, not_found: List[str], sheets_logged: bool = False, batch_id: str = None) -> dict:        
         """Create table using Lark's column layout for better formatting with Google Sheets info."""
@@ -694,7 +814,194 @@ class CheckHandler:
             "elements": elements
         }
 
+    def _create_historical_card(self, view: Dict, date_str: str, source: str, reconstructed: bool = False) -> dict:
+        """Card for `/check [date]`. REUSES the group-subtotal + grand-total table layout
+        from _create_balance_table_card_with_sheets_info (built by feeding it the
+        historical rows as a name->balance dict), then swaps that builder's LIVE header
+        (title/time/wallet-count) for a historical one and adds completeness/fuzzy/
+        unavailable notes. The "not found" note is inherited for free since we pass
+        view["not_found"] straight through to the reused builder.
+        """
+        rows = view.get("rows", [])
+        # A display name can legitimately map to TWO different addresses in a historical
+        # snapshot (a wallet renamed/rotated over time -- see
+        # test_same_name_different_address_both_kept in tests/test_snapshot.py), unlike the
+        # live path where wallets.json keys wallets by name so this can't happen. The reused
+        # builder below is keyed by display name, so a bare name->row dict would let one
+        # collide-and-drop the other, silently under-reporting the total.
+        #
+        # Guarantee a globally UNIQUE key per row by checking against what's actually been
+        # assigned so far (`key in balances`), not by reasoning about what "should" be
+        # unique -- an assumption-based disambiguator (e.g. a truncated address suffix, or
+        # even the full canonical address) can itself coincide with some other row's literal
+        # name. Escalating against the real, growing dict is correct by construction for any
+        # input: it can never silently overwrite, because a used key always gets pushed to a
+        # longer, still-checked alternative. The common (unique-name) case is untouched.
+        balances, wallets_to_check = {}, {}
+        for r in rows:
+            key = r["name"]
+            if key in balances:
+                key = f'{r["name"]} [{canonical_address(r["address"])}]'
+                n = 2
+                while key in balances:
+                    key = f'{r["name"]} [{canonical_address(r["address"])}] #{n}'
+                    n += 1
+            balances[key] = r["balance"]
+            wallets_to_check[key] = {"company": r["company"]}
 
+        base_card = self._create_balance_table_card_with_sheets_info(
+            balances, wallets_to_check, time_str=date_str,
+            not_found=view.get("not_found", []), sheets_logged=False, batch_id=None)
+
+        # The reused builder's first 3 elements are its own live-check header
+        # (title/time/wallet-count); element[3] is the "hr" right after them, which we
+        # keep as the separator between OUR header and its grouped-totals/detail table.
+        table_elements = base_card["elements"][3:]
+
+        header_elements = [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": "🕰️ **Historical Wallet Balance Check**"}
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"📅 **Date:** {date_str}"}
+            },
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"ℹ️ **Source:** {source}"}
+            },
+        ]
+
+        if view.get("missing"):
+            header_elements.append({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": "⚠️ **Completeness warning — expected but missing from this "
+                                f"snapshot:** {', '.join(view['missing'])}"
+                }
+            })
+
+        if view.get("fuzzy"):
+            fuzzy_lines = "\n".join(
+                f'🔍 "{want}" ≈ closest to "{", ".join(matches)}"'
+                for want, matches in view["fuzzy"].items()
+            )
+            header_elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": fuzzy_lines}
+            })
+
+        if view.get("unavailable"):
+            header_elements.append({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": "🚫 **Unavailable (reconstruction failed, excluded from "
+                                f"total):** {', '.join(view['unavailable'])}"
+                }
+            })
+
+        base_card["elements"] = header_elements + table_elements
+        grand_total = sum(balances.values()) if balances else Decimal("0")
+        base_card["header"] = {
+            "template": "purple" if reconstructed else "blue",
+            "title": {
+                "tag": "plain_text",
+                "content": "🕰️ Historical Wallet Balance Check"
+            },
+            "subtitle": {
+                "tag": "plain_text",
+                "content": f"{date_str} · Total: {grand_total:,.2f} USDT"
+            }
+        }
+        return base_card
+
+    def _create_bad_date_card(self, date_str: str) -> dict:
+        """Create invalid-date error card for `/check [date]`."""
+        return {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": False
+            },
+            "header": {
+                "template": "red",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "❌ Invalid Date"
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"❌ **\"{date_str}\" is not a valid date.**\n\n"
+                                   "Use ISO format in brackets, e.g. `/check [2026-07-15]`."
+                    }
+                }
+            ]
+        }
+
+    def _create_future_date_card(self, date_str: str) -> dict:
+        """Create future-date error card for `/check [date]`."""
+        return {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": False
+            },
+            "header": {
+                "template": "orange",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "⏳ Future Date"
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"⏳ **{date_str} is in the future.**\n\n"
+                                   "Historical checks only work for today or earlier (GMT+7)."
+                    }
+                }
+            ]
+        }
+
+    def _create_bracket_hint_card(self, date_str: str) -> dict:
+        """Create hint card for `/check [date] <un-bracketed filter>`.
+
+        parse_arguments only recognizes [bracket]/"quote"/'quote' tokens; a bare
+        (un-delimited) word is silently dropped and we're only told THAT it happened, not
+        what it was. Rather than guess and possibly show an unfiltered result the user
+        didn't ask for, we stop here and ask them to re-wrap the filter.
+        """
+        return {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": False
+            },
+            "header": {
+                "template": "orange",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "⚠️ Wrap Every Filter in [ ]"
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "⚠️ **Part of your command wasn't recognized and was ignored.**\n\n"
+                                   f"Wrap every filter in brackets, e.g. `/check [{date_str}] [KZP]` "
+                                   f"or `/check [{date_str}] [KZP 96G1]`."
+                    }
+                }
+            ]
+        }
 
     def _create_checking_card(self, wallet_count: int) -> dict:
         """Create 'checking...' status card."""

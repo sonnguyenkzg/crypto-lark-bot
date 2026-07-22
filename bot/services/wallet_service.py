@@ -91,7 +91,8 @@ class WalletService:
                     'name': name,  # Output format uses 'name' for display
                     'address': address,
                     'chain': chain,  # Include chain information
-                    'key': wallet_key
+                    'key': wallet_key,
+                    'created_at': wallet_data.get('created_at')  # Needed by /check [date]'s completeness guard
                 })
                 total_count += 1
             
