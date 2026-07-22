@@ -15,7 +15,9 @@ from typing import Any, Dict, List, Tuple
 
 from bot.services.wallet_service import WalletService
 from bot.services.balance_service import BalanceService
-from bot.services.chain_detector import detect_chain_from_address, get_chain_emoji
+from bot.services.chain_detector import detect_chain_from_address, get_chain_emoji, canonical_address
+from bot.services.command_args import classify_tokens, resolve_fuzzy
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +245,58 @@ class CheckHandler:
             _CHECK_EXECUTION_LOCK = False
             logger.info(f"🔓 Check command UNLOCKED - Execution finished for user {context.sender_id}")
 
-    # Modify your CheckHandler class - add this method and update the existing one
+    def _existed_by(self, created_at, date_str):
+        """True if a wallet with this created_at existed on/before date_str.
+        Missing/unparseable created_at -> True (safe direction: expect it)."""
+        if not created_at:
+            return True
+        try:
+            return created_at[:10] <= date_str
+        except Exception:
+            return True
+
+    def build_historical_view(self, snapshot, current_roster, groups, names, date_str):
+        """Pure: turn a snapshot + filters into rows + warnings. See interface block."""
+        snap_names = [v["wallet_name"] for v in snapshot.values()]
+        # 1. choose which snapshot entries to show
+        selected = list(snapshot.values())
+        if groups:
+            gl = {g.lower() for g in groups}
+            selected = [v for v in selected if v["company"].lower() in gl]
+        fuzzy = {}
+        not_found = []
+        if names:
+            picked = {}
+            base = selected if groups else list(snapshot.values())
+            base_names = [v["wallet_name"] for v in base]
+            for want in names:
+                exact = [v for v in base if v["wallet_name"].lower() == want.lower()]
+                if exact:
+                    for v in exact:
+                        picked[v["address"]] = v
+                    continue
+                close = resolve_fuzzy(want, base_names)
+                if close:
+                    fuzzy[want] = close
+                    for v in base:
+                        if v["wallet_name"] in close:
+                            picked[v["address"]] = v
+                else:
+                    not_found.append(want)
+            selected = list(picked.values())
+        rows = [{"name": v["wallet_name"], "company": v["company"],
+                 "address": v["address"], "balance": v["balance"], "source": "snapshot"}
+                for v in selected]
+        # 2. completeness guard vs CURRENT roster (only when unfiltered)
+        missing = []
+        if not groups and not names:
+            snap_addrs = {canonical_address(v["address"]) for v in snapshot.values()}
+            for w in current_roster:
+                if not self._existed_by(w.get("created_at"), date_str):
+                    continue
+                if canonical_address(w.get("address", "")) not in snap_addrs:
+                    missing.append(w.get("wallet") or w.get("name"))
+        return {"rows": rows, "missing": missing, "not_found": not_found, "fuzzy": fuzzy}
 
     def _create_balance_table_card_with_sheets_info(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str, not_found: List[str], sheets_logged: bool = False, batch_id: str = None) -> dict:        
         """Create table using Lark's column layout for better formatting with Google Sheets info."""
