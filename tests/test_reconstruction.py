@@ -36,3 +36,7 @@ def test_reconstruct_none_when_fetch_fails(monkeypatch):
     monkeypatch.setattr(B, "get_balance", lambda a, c: Decimal("500.00"))
     monkeypatch.setattr(B, "_fetch_transfers_after", lambda a, c, cut: None)
     assert B.get_balance_at(ME, "TRC20", 1) is None
+
+def test_net_self_transfer_is_zero():
+    # wallet sending USDT to itself: credit + debit must cancel to 0
+    assert B._net_from_transfers([tx(ME, ME, "50.00")], ME) == Decimal("0")
