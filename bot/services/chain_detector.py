@@ -95,3 +95,18 @@ def get_chain_display_name(chain: str) -> str:
         "ERC20": "Ethereum (ERC20)"
     }
     return display_names.get(chain, chain)
+
+
+def canonical_address(address: str) -> str:
+    """Canonical on-chain identity used for keying/matching addresses.
+
+    ERC20 ('0x...') hex is case-insensitive -> lowercase.
+    TRC20 ('T...') base58 is case-sensitive -> leave unchanged.
+    Returns "" for empty/invalid input.
+    """
+    if not address or not isinstance(address, str):
+        return ""
+    a = address.strip()
+    if a.startswith("0x"):
+        return a.lower()
+    return a
