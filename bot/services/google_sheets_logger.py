@@ -3,7 +3,7 @@ import logging
 logger = logging.getLogger(__name__)
 import os
 from datetime import datetime, timezone, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -180,12 +180,16 @@ class GoogleSheetsBalanceLogger:
         except Exception as e:
             logger.warning(f"Could not ensure headers for {sheet_name}: {e}")
 
-    def _parse_amount(self, s) -> Decimal:
-        """Parse amount string to Decimal, stripping commas."""
+    def _parse_amount(self, s):
+        """Parse a stored balance ('351,432.18') to Decimal. Returns None for an
+        empty or non-numeric cell so the caller can EXCLUDE (not silently zero) it."""
         try:
-            return Decimal(str(s).replace(",", "").strip() or "0")
-        except Exception:
-            return Decimal("0")
+            cleaned = str(s).replace(",", "").strip()
+            if not cleaned:
+                return None
+            return Decimal(cleaned)
+        except (InvalidOperation, ValueError, TypeError):
+            return None
 
     def _build_snapshot_from_rows(self, rows, date_str):
         """Union of all that-date batches, keyed by canonical_address, keeping the
@@ -198,15 +202,18 @@ class GoogleSheetsBalanceLogger:
             key = canonical_address(r[5])
             if not key:
                 continue
+            amount = self._parse_amount(r[6])
+            if amount is None:
+                continue   # corrupted/empty balance -> exclude; completeness guard will surface it
             prev = snap.get(key)
             if prev is None or r[0] < prev["batch_id"]:   # earliest batch_id wins
                 snap[key] = {
                     "wallet_name": r[3],
-                    "company": r[4] if len(r) > 4 else "Unknown",
+                    "company": r[4],
                     "address": r[5],
-                    "balance": self._parse_amount(r[6]),
+                    "balance": amount,
                     "batch_id": r[0],
-                    "time": r[2] if len(r) > 2 else "",
+                    "time": r[2],
                 }
         return snap
 
@@ -214,47 +221,13 @@ class GoogleSheetsBalanceLogger:
         """Read DAILY_REPORT and return the assembled snapshot for date_str."""
         if not self.credentials_file or not self.spreadsheet_id:
             return {}
-        if not self._initialize_service():
+        try:
+            if not self._initialize_service():
+                return {}
+            res = self.sheet.values().get(
+                spreadsheetId=self.spreadsheet_id, range="DAILY_REPORT!A:H").execute()
+            rows = res.get("values", [])
+            return self._build_snapshot_from_rows(rows[1:] if rows else [], date_str)
+        except Exception as e:
+            logger.error(f"Failed to read DAILY_REPORT snapshot for {date_str}: {e}")
             return {}
-        res = self.sheet.values().get(
-            spreadsheetId=self.spreadsheet_id, range="DAILY_REPORT!A:H").execute()
-        rows = res.get("values", [])
-        return self._build_snapshot_from_rows(rows[1:] if rows else [], date_str)
-
-
-# Integration code for CheckHandler (add to your check_handler.py)
-
-# Add this to the imports section:
-# from .google_sheets_balance_logger import GoogleSheetsBalanceLogger
-
-# Add this to CheckHandler.__init__ method:
-# self.sheets_logger = GoogleSheetsBalanceLogger()
-
-# Add this after successful balance fetching in handle() method, 
-# right before creating the table card:
-
-# Log to Google Sheets (add this in handle method after balance fetching)
-try:
-    self.sheets_logger.log_balance_check(balances, wallets_to_check, check_type="manual")
-except Exception as e:
-    logger.warning(f"Failed to log balance check to Google Sheets: {e}")
-    # Continue with normal operation even if sheets logging fails
-
-
-# Integration code for Daily Report Scheduler (add to your main.py)
-
-# Add this to the imports section:
-# from .google_sheets_balance_logger import GoogleSheetsBalanceLogger
-
-# Add this to LarkDailyReportScheduler.__init__ method:
-# self.sheets_logger = GoogleSheetsBalanceLogger()
-
-# Add this in send_daily_report() method after successful balance fetching,
-# right before creating the report card:
-
-# Log to Google Sheets (add this in send_daily_report method after balance fetching)
-try:
-    self.sheets_logger.log_balance_check(successful_balances, wallet_data, check_type="scheduled")
-except Exception as e:
-    logger.warning(f"Failed to log daily report to Google Sheets: {e}")
-    # Continue with normal operation even if sheets logging fails

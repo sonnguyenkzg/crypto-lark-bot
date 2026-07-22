@@ -8,7 +8,9 @@ def row(batch, time, wallet, addr, bal, date="2026-07-15"):
 
 def test_parse_amount_strips_commas():
     assert L._parse_amount("351,432.18") == Decimal("351432.18")
-    assert L._parse_amount("") == Decimal("0")
+    assert L._parse_amount("0.00") == Decimal("0.00")
+    assert L._parse_amount("") is None          # empty -> excluded, not zeroed
+    assert L._parse_amount("N/A") is None        # corrupted -> excluded
 
 def test_union_completes_partial_retry():
     # 00:01 batch has A only; 00:07 retry adds B (B failed at 00:01)
@@ -48,3 +50,23 @@ def test_same_name_different_address_both_kept():
 def test_ignores_other_dates():
     rows = [row("20260714000112", "00:01:12", "A", "TAAA", "10.00", date="2026-07-14")]
     assert L._build_snapshot_from_rows(rows, "2026-07-15") == {}
+
+def test_reversed_batch_order_earliest_still_wins():
+    # rows arriving newest-first must still yield the earliest (00:01) value
+    rows = [
+        row("20260715140000", "14:00:00", "A", "TAAA", "999.00"),
+        row("20260715000112", "00:01:12", "A", "TAAA", "10.00"),
+    ]
+    snap = L._build_snapshot_from_rows(rows, "2026-07-15")
+    assert snap["TAAA"]["balance"] == Decimal("10.00")
+
+def test_malformed_rows_excluded_not_crash():
+    rows = [
+        ["20260715000112", "2026-07-15", "00:01:12", "SHORT"],        # short row
+        row("20260715000112", "00:01:12", "NOADDR", "", "5.00"),       # missing address
+        row("20260715000112", "00:01:12", "BADBAL", "TCCC", "N/A"),    # non-numeric balance
+        row("20260715000112", "00:01:12", "OK", "TAAA", "7.00"),       # good
+    ]
+    snap = L._build_snapshot_from_rows(rows, "2026-07-15")
+    assert set(snap.keys()) == {"TAAA"}
+    assert snap["TAAA"]["balance"] == Decimal("7.00")
