@@ -11,7 +11,7 @@ from typing import Any, Tuple, Union
 
 from bot.services.wallet_service import WalletService
 from bot.services.balance_service import BalanceService
-from bot.services.chain_detector import get_chain_emoji
+from bot.services.chain_detector import get_chain_emoji, detect_chain_from_address, canonical_address
 
 logger = logging.getLogger(__name__)
 
@@ -59,48 +59,54 @@ class RemoveHandler:
         
         return True, wallet_identifier
 
+    def _match_address(self, identifier, wallets_list):
+        """Return the wallet dict whose address matches `identifier` by canonical
+        address (ERC20 case-insensitive, TRC20 exact), or None."""
+        target = canonical_address(identifier)
+        if not target:
+            return None
+        for w in wallets_list:
+            if canonical_address(w.get("address", "")) == target:
+                return w
+        return None
+
     def find_wallet_by_identifier(self, identifier: str) -> Tuple[bool, Union[dict, str]]:
         """
         Find wallet by name or address.
-        
+
         Args:
-            identifier: Wallet name or TRON address
-            
+            identifier: Wallet name or address (TRC20 or ERC20)
+
         Returns:
             Tuple[bool, Union[dict, str]]: (found, wallet_info or error_message)
         """
         try:
             # First, try to get wallet by name (existing functionality)
             wallet_exists, wallet_info = self.wallet_service.get_wallet(identifier)
-            
+
             if wallet_exists:
                 return True, wallet_info
-            
-            # Check if identifier is a valid TRON address
-            if self.balance_service.validate_trc20_address(identifier):
-                # It's a valid address, search through all wallets to find it
+
+            # Check if identifier is a valid address (TRC20 or ERC20)
+            if detect_chain_from_address(identifier):   # valid TRC20 or ERC20 address
                 success, wallet_data = self.wallet_service.list_wallets()
-                
+
                 if success and 'companies' in wallet_data:
+                    flat = []
                     for company_name, company_wallets in wallet_data['companies'].items():
-                        for wallet in company_wallets:
-                            if wallet['address'].lower() == identifier.lower():
-                                # Found wallet with matching address
-                                # FIXED: Use 'wallet' key instead of 'name' to match JSON structure
-                                wallet_info = {
-                                    'name': wallet['name'],  # This comes from list_wallets which uses 'name' in output
-                                    'wallet': wallet['name'],  # Add wallet key for consistency
-                                    'address': wallet['address'],
-                                    'company': company_name
-                                }
-                                return True, wallet_info
-                
+                        for w in company_wallets:
+                            flat.append({"name": w["name"], "address": w["address"], "company": company_name})
+                    hit = self._match_address(identifier, flat)
+                    if hit:
+                        return True, {"name": hit["name"], "wallet": hit["name"],
+                                      "address": hit["address"], "company": hit["company"]}
+
                 # Valid address but not found in our wallets
-                return False, f"❌ TRON address '{identifier[:10]}...{identifier[-6:]}' not found in wallet list"
-            
+                return False, f"❌ Address '{identifier[:10]}...{identifier[-6:]}' not found in wallet list"
+
             # Not a valid address and not found by name
             return False, f"❌ Wallet '{identifier}' not found"
-            
+
         except Exception as e:
             logger.error(f"Error finding wallet by identifier '{identifier}': {e}")
             return False, f"❌ Error searching for wallet: {str(e)}"
@@ -181,7 +187,7 @@ class RemoveHandler:
         chain_emoji = get_chain_emoji(chain)
 
         # Show what identifier was used
-        identifier_type = "address" if self.balance_service.validate_trc20_address(original_identifier) else "name"
+        identifier_type = "address" if detect_chain_from_address(original_identifier) else "name"
         
         return {
             "config": {
@@ -249,16 +255,16 @@ class RemoveHandler:
         try:
             success, wallet_data = self.wallet_service.list_wallets()
             similar_names = []
-            
+
             if success and 'companies' in wallet_data:
                 all_wallet_names = []
                 for company_wallets in wallet_data['companies'].values():
                     for wallet in company_wallets:
                         all_wallet_names.append(wallet['name'])
-                
+
                 # Find similar names (only for name searches, not addresses)
-                if not self.balance_service.validate_trc20_address(identifier):
-                    similar_names = [name for name in all_wallet_names 
+                if not detect_chain_from_address(identifier):
+                    similar_names = [name for name in all_wallet_names
                                    if identifier.lower() in name.lower()][:3]
         except:
             similar_names = []
