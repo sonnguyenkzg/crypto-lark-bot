@@ -358,6 +358,12 @@ class CheckHandler:
                 self._create_future_date_card(date_str), msg_type="interactive")
             return False
 
+        # Acknowledge immediately (same courtesy as the live /check path): reading the
+        # sheet takes a moment and a gap date can take up to ~90s to rebuild, so the user
+        # should never be left staring at silence.
+        await context.topic_manager.send_command_response(
+            self._create_historical_checking_card(date_str), msg_type="interactive")
+
         companies = sorted({info["company"] for info in wallet_data.values()})
         names_all = [info["wallet"] for info in wallet_data.values()]
         groups, names = classify_tokens(other_tokens, companies, names_all)
@@ -386,6 +392,10 @@ class CheckHandler:
             targets, fuzzy, not_found = self._filter_roster(existing_roster, groups, names)
             rows, unavailable = [], []
             if targets:
+                # This is the genuinely slow path (chain history per wallet) -- tell the
+                # user what is happening and roughly how long it will take.
+                await context.topic_manager.send_command_response(
+                    self._create_rebuilding_card(date_str, len(targets)), msg_type="interactive")
                 # PROD SAFETY: run reconstruction on a DEDICATED bounded thread pool -- never the
                 # default executor the LIVE /check path uses -- so stale/slow gap-date threads can
                 # never saturate it and starve live checks. One outer budget caps total lock-hold;
@@ -1016,6 +1026,62 @@ class CheckHandler:
                                    f"Wrap the date (and any filter) in brackets, e.g. `/check [{date_str}]` "
                                    f"for a date on its own, or `/check [{date_str}] [KZP]` to also filter "
                                    "by company or wallet name."
+                    }
+                }
+            ]
+        }
+
+    def _create_historical_checking_card(self, date_str: str) -> dict:
+        """Acknowledge a `/check [date]` right away, before the sheet/chain lookup."""
+        return {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": False
+            },
+            "header": {
+                "template": "blue",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "🔄 Checking Balances..."
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"🔄 **Looking up balances for {date_str}...**\n\n"
+                                   "Reading the daily record for that date. This may take a few seconds."
+                    }
+                }
+            ]
+        }
+
+    def _create_rebuilding_card(self, date_str: str, wallet_count: int) -> dict:
+        """Tell the user we fell back to rebuilding from the blockchain (the slow path)."""
+        wallet_word = "wallet" if wallet_count == 1 else "wallets"
+        return {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": False
+            },
+            "header": {
+                "template": "blue",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "🔄 Rebuilding From Blockchain..."
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"🔄 **No daily record was saved for {date_str}, so I'm working the "
+                                   f"balances out from the blockchain for {wallet_count} {wallet_word}.**\n\n"
+                                   "This is slower than reading a saved record — it can take up to about "
+                                   "90 seconds. Any wallet that can't be worked out in time will be listed "
+                                   "as \"unavailable\" rather than left out."
                     }
                 }
             ]
