@@ -8,6 +8,7 @@ import requests
 import logging
 import os
 import time as _time
+import threading
 from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict
@@ -15,11 +16,20 @@ from bot.services.chain_detector import canonical_address
 
 logger = logging.getLogger(__name__)
 
+# Shared across all threads: last outbound request time per provider, so concurrent
+# reconstruction workers collectively respect one request rate per host.
+_RATE_LOCK = threading.Lock()
+_LAST_REQUEST_AT = {}
+
 class BalanceService:
     """Service for checking USDT wallet balances across multiple chains (TRC20, ERC20)."""
 
     TRANSFER_MAX_PAGES = 200          # ~10k TRC20 / ~20k ERC20 transfers; matches Tronscan's 10k cap
     TRANSFER_FETCH_DEADLINE = 25.0    # seconds; a single wallet's fetch may not exceed this
+    RATE_LIMIT_RETRIES = 4            # retries on HTTP 429/5xx before giving up
+    RATE_LIMIT_BACKOFF = 1.0          # seconds; doubles per retry (1, 2, 4, 8)
+    # Minimum seconds between requests per provider (pacing beats getting throttled).
+    MIN_REQUEST_INTERVAL = {"tron": 0.6, "eth": 0.25}
 
     def __init__(self):
         # Configuration constants
@@ -52,8 +62,10 @@ class BalanceService:
             headers['TRON-PRO-API-KEY'] = api_key
         
         try:
-            resp = requests.get(url, headers=headers, timeout=self.API_TIMEOUT)  # Add headers parameter
-            resp.raise_for_status()
+            resp = self._get_with_retry(url, headers=headers)  # retries on 429/5xx
+            if resp is None:
+                logger.error(f"TRC20 balance unavailable after retries for {address[:10]}...")
+                return None
 
             # Rest of your method remains exactly the same
             data = resp.json().get("data", [])
@@ -121,8 +133,10 @@ class BalanceService:
         }
 
         try:
-            resp = requests.get(url, params=params, timeout=self.API_TIMEOUT)
-            resp.raise_for_status()
+            resp = self._get_with_retry(url, params=params)  # retries on 429/5xx
+            if resp is None:
+                logger.error(f"ERC20 balance unavailable after retries for {address[:10]}...")
+                return None
 
             data = resp.json()
 
@@ -251,6 +265,70 @@ class BalanceService:
         logger.info(f"Completed fetching balances for {total_wallets} wallets")
         return balances
     
+    def _throttle(self, url):
+        """Pace outbound calls per provider so we never trip their rate limiter.
+
+        Tronscan rejects bursts with HTTP 429; backing off *after* rejection wastes far
+        more time than spacing requests out in the first place. Shared across threads so
+        the whole process respects one rate per host.
+        """
+        host = "tron" if "tronscan" in url else "eth" if "etherscan" in url else "other"
+        interval = self.MIN_REQUEST_INTERVAL.get(host, 0.0)
+        if interval <= 0:
+            return
+        with _RATE_LOCK:
+            last = _LAST_REQUEST_AT.get(host, 0.0)
+            now = _time.monotonic()
+            wait = last + interval - now
+            if wait > 0:
+                _time.sleep(wait)
+                now = _time.monotonic()
+            _LAST_REQUEST_AT[host] = now
+
+    def _get_with_retry(self, url, params=None, headers=None, deadline=None):
+        """GET that survives provider rate limiting (HTTP 429).
+
+        Tronscan/Etherscan throttle bursts, and a throttled call previously surfaced as
+        "balance unavailable". Retries on 429 (and 5xx) with exponential backoff,
+        honouring Retry-After when the provider sends it. Returns the response, or None
+        if it kept failing / the caller's deadline passed.
+        """
+        delay = self.RATE_LIMIT_BACKOFF
+        for attempt in range(self.RATE_LIMIT_RETRIES + 1):
+            if deadline is not None and _time.monotonic() > deadline:
+                return None
+            self._throttle(url)
+            try:
+                resp = requests.get(url, params=params, headers=headers, timeout=self.API_TIMEOUT)
+            except requests.exceptions.RequestException as e:
+                if attempt >= self.RATE_LIMIT_RETRIES:
+                    raise
+                logger.warning(f"request error ({e}); retry {attempt + 1}/{self.RATE_LIMIT_RETRIES}")
+                _time.sleep(delay)
+                delay *= 2
+                continue
+
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt >= self.RATE_LIMIT_RETRIES:
+                    logger.error(f"giving up after {attempt + 1} attempts (HTTP {resp.status_code})")
+                    return None
+                wait = delay
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        wait = max(wait, float(retry_after))
+                    except (TypeError, ValueError):
+                        pass
+                logger.warning(f"HTTP {resp.status_code} (rate limited); backing off {wait:.1f}s "
+                               f"-> retry {attempt + 1}/{self.RATE_LIMIT_RETRIES}")
+                _time.sleep(wait)
+                delay *= 2
+                continue
+
+            resp.raise_for_status()
+            return resp
+        return None
+
     def _net_from_transfers(self, transfers, address) -> Decimal:
         """Signed net USDT (already in USDT units) over SUCCESS transfers.
         +amount when I'm the recipient, -amount when I'm the sender."""
@@ -289,9 +367,11 @@ class BalanceService:
                     params = {"relatedAddress": address, "contract_address": self.USDT_TRC20_CONTRACT,
                               "start_timestamp": cutoff_ms + 1, "end_timestamp": now_ms,
                               "limit": 50, "start": start, "sort": "-timestamp"}
-                    r = requests.get("https://apilist.tronscanapi.com/api/token_trc20/transfers",
-                                     params=params, headers=headers, timeout=self.API_TIMEOUT)
-                    r.raise_for_status()
+                    r = self._get_with_retry("https://apilist.tronscanapi.com/api/token_trc20/transfers",
+                                            params=params, headers=headers, deadline=_deadline)
+                    if r is None:
+                        logger.warning(f"TRC20 transfers unavailable after retries for {address[:10]}...")
+                        return None
                     ts = r.json().get("token_transfers", []) or []
                     pages += 1
                     for t in ts:
@@ -322,8 +402,11 @@ class BalanceService:
                     params = {"chainid": "1", "module": "account", "action": "tokentx",
                               "contractaddress": self.USDT_ERC20_CONTRACT, "address": address,
                               "page": page, "offset": 100, "sort": "desc", "apikey": key}
-                    r = requests.get("https://api.etherscan.io/v2/api", params=params, timeout=self.API_TIMEOUT)
-                    r.raise_for_status()
+                    r = self._get_with_retry("https://api.etherscan.io/v2/api",
+                                            params=params, deadline=_deadline)
+                    if r is None:
+                        logger.warning(f"ERC20 transfers unavailable after retries for {address[:10]}...")
+                        return None
                     d = r.json()
                     txs = d.get("result") or []
                     pages += 1
