@@ -373,8 +373,10 @@ class CheckHandler:
                    "chain": i.get("chain", "TRC20"), "created_at": i.get("created_at")}
                   for i in wallet_data.values()]
 
-        # get_snapshot_for_date already catches its own errors and returns {} on failure.
-        snapshot = self.sheets_logger.get_snapshot_for_date(date_str)
+        # One sheet read gives us both the exact snapshot and, if that date was never
+        # saved, the closest date that was -- so no wallet is ever left without a number.
+        snapshot, nearest_date, nearest_snapshot = \
+            self.sheets_logger.get_snapshot_and_nearest(date_str)
 
         if snapshot:
             view = self.build_historical_view(snapshot, roster, groups, names, date_str)
@@ -433,8 +435,31 @@ class CheckHandler:
                                          "source": "reconstructed"})
                 finally:
                     recon_pool.shutdown(wait=False)      # never block the event loop
+
+            # RELIABILITY: never leave a wallet with no number. Some wallets simply cannot
+            # be rebuilt from transfer history (a very busy wallet can exceed 10,000
+            # transfers in a single day, which is Tronscan's hard listing cap). For those,
+            # fall back to the closest saved record and label the row, instead of dropping
+            # the wallet and understating the total.
+            fallback_used = []
+            if unavailable and nearest_snapshot:
+                still_unavailable = []
+                by_addr = {canonical_address(w["address"]): w for w in targets}
+                for wallet_name in unavailable:
+                    w = next((x for x in targets if x["wallet"] == wallet_name), None)
+                    entry = nearest_snapshot.get(canonical_address(w["address"])) if w else None
+                    if entry:
+                        rows.append({"name": w["wallet"], "company": w["company"],
+                                     "address": w["address"], "balance": entry["balance"],
+                                     "source": "nearest"})
+                        fallback_used.append(w["wallet"])
+                    else:
+                        still_unavailable.append(wallet_name)
+                unavailable = still_unavailable
+
             view = {"rows": rows, "missing": [], "not_found": not_found, "fuzzy": fuzzy,
-                    "unavailable": unavailable}
+                    "unavailable": unavailable, "fallback": fallback_used,
+                    "fallback_date": nearest_date}
             source = f"Reconstructed from chain — no snapshot for {date_str}"
             card = self._create_historical_card(view, date_str, source, reconstructed=True)
 
@@ -914,13 +939,26 @@ class CheckHandler:
                 "text": {"tag": "lark_md", "content": fuzzy_lines}
             })
 
+        if view.get("fallback"):
+            fb_date = view.get("fallback_date") or "the closest saved date"
+            header_elements.append({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": f"📌 **Shown from the saved record of {fb_date}** (these wallets have "
+                               "too much daily transaction history to rebuild exactly, so the closest "
+                               f"saved figure is used and IS included in the total): "
+                               f"{', '.join(view['fallback'])}"
+                }
+            })
+
         if view.get("unavailable"):
             header_elements.append({
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": "🚫 **Unavailable (reconstruction failed, excluded from "
-                                f"total):** {', '.join(view['unavailable'])}"
+                    "content": "🚫 **No figure available (excluded from total):** "
+                                f"{', '.join(view['unavailable'])}"
                 }
             })
 

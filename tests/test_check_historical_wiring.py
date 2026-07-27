@@ -32,11 +32,16 @@ ROSTER = {"companies": {
 }}
 
 
-def _handler(monkeysnapshot=None, monkeybalances=None):
+def _handler(monkeysnapshot=None, monkeybalances=None, nearest=None):
+    """nearest = (date_str, snapshot_dict) used when monkeysnapshot is empty (gap date)."""
     h = CheckHandler()
     h.wallet_service.list_wallets = lambda: (True, ROSTER)
     if monkeysnapshot is not None:
+        near_date, near_snap = nearest if nearest else (None, {})
         h.sheets_logger.get_snapshot_for_date = lambda d: monkeysnapshot
+        h.sheets_logger.get_snapshot_and_nearest = (
+            lambda d: (monkeysnapshot, None, {}) if monkeysnapshot
+            else ({}, near_date, near_snap))
     if monkeybalances is not None:
         h.balance_service.get_balance_at = lambda addr, chain, cutoff: monkeybalances.get(addr)
     return h
@@ -140,3 +145,33 @@ def test_reconstruction_timeout_marks_unavailable_not_dropped():
     # BOTH roster wallets must surface as unavailable, neither silently dropped
     assert "KZP 96G1" in blob
     assert "Eth One" in blob
+
+
+def test_unrebuildable_wallet_falls_back_to_nearest_record_not_dropped():
+    """A wallet that can't be rebuilt must still show a number (from the closest saved
+    record) and be INCLUDED in the total -- never silently dropped or left blank."""
+    nearest_snap = {
+        "TAAA": {"wallet_name": "KZP 96G1", "company": "KZP", "address": "TAAA",
+                 "balance": Decimal("500.00"), "batch_id": "20260719000112", "time": "00:01:12"},
+    }
+    # gap date (no snapshot); TAAA cannot be rebuilt (None), the ERC20 one can
+    h = _handler(monkeysnapshot={},
+                 monkeybalances={"TAAA": None,
+                                 "0xabc0000000000000000000000000000000000001": Decimal("10.00")},
+                 nearest=("2026-07-19", nearest_snap))
+    blob = _blob(_run(h, ["[2026-07-20]"])[-1])
+    assert "KZP 96G1" in blob                    # present, not dropped
+    assert "2026-07-19" in blob                  # says where the figure came from
+    assert "510.00" in blob                      # 500 (fallback) + 10 (rebuilt) => in the total
+    assert "No figure available" not in blob     # nothing left unavailable
+
+
+def test_no_nearest_record_still_reports_wallet_as_unavailable():
+    """If there is no saved record anywhere for a wallet, be honest rather than invent."""
+    h = _handler(monkeysnapshot={},
+                 monkeybalances={"TAAA": None,
+                                 "0xabc0000000000000000000000000000000000001": Decimal("10.00")},
+                 nearest=(None, {}))
+    blob = _blob(_run(h, ["[2026-07-20]"])[-1])
+    assert "No figure available" in blob
+    assert "KZP 96G1" in blob
