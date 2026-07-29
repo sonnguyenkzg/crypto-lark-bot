@@ -945,10 +945,9 @@ class CheckHandler:
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": f"📌 **Shown from the saved record of {fb_date}** (these wallets have "
-                               "too much daily transaction history to rebuild exactly, so the closest "
-                               f"saved figure is used and IS included in the total): "
-                               f"{', '.join(view['fallback'])}"
+                    "content": f"📌 **{', '.join(view['fallback'])}** — too many daily "
+                               f"transactions to rebuild, so the balance saved on {fb_date} "
+                               "is shown instead. Counted in the total."
                 }
             })
 
