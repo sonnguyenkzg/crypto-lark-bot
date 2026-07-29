@@ -53,3 +53,9 @@ def test_erc20_address_case_is_ignored():
     s = snap(("0xabc", "KZO ERC A 1", "KZO", "29629.90"))    # snapshot key lowercased
     r = by_name(H.classify_wallets(ROSTER, s, "2026-07-15"))["KZO ERC A 1"]
     assert r["status"] == "saved"          # matched despite roster having 0xABC
+
+def test_removed_erc20_wallet_keeps_its_real_chain():
+    s = snap(("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "Removed Eth", "KZO", "500.00"))
+    row = by_name(H.classify_wallets(ROSTER, s, "2026-07-15"))["Removed Eth"]
+    assert row["status"] == "removed_but_saved"
+    assert row["chain"] == "ERC20"        # not the hardcoded TRC20

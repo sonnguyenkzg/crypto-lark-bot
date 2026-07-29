@@ -313,7 +313,7 @@ class CheckHandler:
             if key in seen:
                 continue
             out.append({"name": entry["wallet_name"], "company": entry.get("company", "Unknown"),
-                        "address": entry.get("address", ""), "chain": "TRC20",
+                        "address": entry.get("address", ""), "chain": detect_chain_from_address(entry.get("address", "")) or "TRC20",
                         "status": "removed_but_saved", "balance": entry["balance"]})
         return out
 
