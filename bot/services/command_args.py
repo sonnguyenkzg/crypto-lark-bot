@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from difflib import get_close_matches
+from difflib import SequenceMatcher
 
 # One [bracket] OR "double" OR 'single' quoted token
 _TOKEN_RE = re.compile(r'\[([^\[\]"\']*)\]|"([^\[\]"\']*)"|\'([^\[\]"\']*)\'')
@@ -63,19 +63,64 @@ def classify_tokens(tokens, companies, wallet_names):
     return groups, names
 
 
+def normalize_name(s):
+    """lowercase; every run of non-alphanumerics becomes one space; trimmed."""
+    return re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
+
+
+def squash_name(s):
+    """lowercase with every non-alphanumeric removed, so 'TH 2' == 'TH2'."""
+    return re.sub(r"[^a-z0-9]+", "", str(s).lower())
+
+
 def resolve_fuzzy(token, candidates, n=3, cutoff=0.6):
-    """Closest wallet names to `token`: case-insensitive substring hits first,
-    then case-insensitive difflib close matches. Deduped, order-preserving, capped at n."""
+    """Find the wallet name(s) the user meant.
+
+    Tries progressively looser rules and stops at the first that hits, so a query
+    that matches literally never gets guesses mixed in:
+        exact -> starts with -> contains -> all words -> closest match
+
+    Spacing, punctuation and case are ignored throughout.
+    Literal tiers return EVERY match (truncating could hide a real wallet);
+    only the closest-match tier is capped at `n`, because those are guesses.
+
+    Returns (matches, tier). tier is "none" when nothing matched.
+    """
     if not token or not candidates:
-        return []
-    tl = token.lower()
-    subs = [c for c in candidates if tl in c.lower() or c.lower() in tl]
-    lower_map = {}
-    for c in candidates:
-        lower_map.setdefault(c.lower(), c)   # first original per lowercased form
-    close = [lower_map[m] for m in get_close_matches(tl, list(lower_map.keys()), n=n, cutoff=cutoff)]
-    out = []
-    for c in list(subs) + list(close):
-        if c not in out:
-            out.append(c)
-    return out[:n]
+        return [], "none"
+    qn, qs = normalize_name(token), squash_name(token)
+    if not qs:
+        return [], "none"
+
+    exact = [c for c in candidates if squash_name(c) == qs]
+    if exact:
+        return exact, "exact"
+
+    starts = [c for c in candidates if squash_name(c).startswith(qs)]
+    if starts:
+        return starts, "starts with"
+
+    contains = [c for c in candidates if qs in squash_name(c)]
+    if contains:
+        return contains, "contains"
+
+    words = qn.split()
+    if len(words) > 1:
+        all_words = [c for c in candidates
+                     if all(w in normalize_name(c) for w in words)]
+        if all_words:
+            return all_words, "all words"
+
+    def score(c):
+        cn, cs = normalize_name(c), squash_name(c)
+        # compare against the whole name AND its same-length start, in both the
+        # spaced and squashed forms -- the head comparison is what lets a short
+        # typo'd query ("DPY CYO") still find a longer name.
+        return max(SequenceMatcher(None, qn, cn).ratio(),
+                   SequenceMatcher(None, qn, cn[:len(qn)]).ratio(),
+                   SequenceMatcher(None, qs, cs).ratio(),
+                   SequenceMatcher(None, qs, cs[:len(qs)]).ratio())
+
+    ranked = sorted(((score(c), c) for c in candidates), key=lambda x: -x[0])
+    close = [c for s, c in ranked if s >= cutoff][:n]
+    return (close, "closest match") if close else ([], "none")
