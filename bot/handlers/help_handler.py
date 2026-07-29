@@ -78,7 +78,7 @@ class HelpHandler:
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": "• **/start** - Start the bot and check connection\n• **/help** - Show available commands and their descriptions\n• **/list** - Show all configured wallets\n• **/add [company] [wallet] [address]** - Add new wallet\n• **/remove [name or address]** - Remove wallet by name or address\n• **/check** - Check all wallet balances\n• **/check [2026-07-15]** - Balances on that date\n• **/check [2026-07-15] [KZP]** - One company on that date\n• **/check [2026-07-15] [KZP 96G1]** - One wallet on that date (typo-tolerant)"
+                                "content": "• **/start** - Start the bot and check connection\n• **/help** - Show available commands and their descriptions\n• **/list** - Show all configured wallets\n• **/add [company] [wallet name] [address]** - Add a new wallet\n• **/remove [wallet name or address]** - Remove a wallet\n• **/check** - Check all wallet balances\n• **/check [2026-07-15]** - Balances on that date\n• **/check [2026-07-15] [KZP]** - One company on that date\n• **/check [2026-07-15] [KZP 96G1]** - One wallet on that date (typo-tolerant)"
                             }
                         }
                     ]
@@ -176,8 +176,8 @@ class HelpHandler:
 • **/start** - Start the bot and check connection
 • **/help** - Show available commands and their descriptions
 • **/list** - Show all configured wallets
-• **/add [company] [wallet] [address]** - Add new wallet
-• **/remove [name or address]** - Remove wallet by name or address
+• **/add [company] [wallet name] [address]** - Add a new wallet
+• **/remove [wallet name or address]** - Remove a wallet
 • **/check** - Check all wallet balances
 • **/check [2026-07-15]** - Balances on that date
 • **/check [2026-07-15] [KZP]** - One company on that date
