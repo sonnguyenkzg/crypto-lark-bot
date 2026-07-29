@@ -405,101 +405,96 @@ class CheckHandler:
         names_all = [info["wallet"] for info in wallet_data.values()]
         groups, names = classify_tokens(other_tokens, companies, names_all)
 
-        # current roster (wallet_service already loaded into wallet_data)
+        snapshot, _nearest_date, _nearest_snapshot = \
+            self.sheets_logger.get_snapshot_and_nearest(date_str)
+
         roster = [{"wallet": i["wallet"], "company": i["company"], "address": i["address"],
                    "chain": i.get("chain", "TRC20"), "created_at": i.get("created_at")}
                   for i in wallet_data.values()]
 
-        # One sheet read gives us both the exact snapshot and, if that date was never
-        # saved, the closest date that was -- so no wallet is ever left without a number.
-        snapshot, nearest_date, nearest_snapshot = \
-            self.sheets_logger.get_snapshot_and_nearest(date_str)
+        entries = self.classify_wallets(roster, snapshot, date_str)
+        entries, fuzzy, not_found = self._filter_entries(entries, groups, names)
 
-        if snapshot:
-            view = self.build_historical_view(snapshot, roster, groups, names, date_str)
-            card = self._create_historical_card(view, date_str, reconstructed=False)
-        else:
-            # Gap: no snapshot logged for this date -- reconstruct the current roster's
-            # balances as of date_str 00:01 GMT+7 from on-chain transfer history.
+        todo = [e for e in entries if e["status"] == "needs_rebuild"]
+        if todo:
+            await context.topic_manager.send_command_response(
+                self._create_rebuilding_card(date_str, len(todo)), msg_type="interactive")
             cutoff_ms = int(datetime.strptime(date_str + " 00:01:00", "%Y-%m-%d %H:%M:%S")
                             .replace(tzinfo=timezone(timedelta(hours=7))).timestamp() * 1000)
-            # Same "did this wallet exist yet" guard as the snapshot path's completeness
-            # check (_existed_by): a wallet added AFTER date_str has nothing meaningful to
-            # reconstruct for that date, so it's excluded here rather than fabricated.
-            existing_roster = [w for w in roster if self._existed_by(w.get("created_at"), date_str)]
-            targets, fuzzy, not_found = self._filter_roster(existing_roster, groups, names)
-            rows, unavailable = [], []
-            if targets:
-                # This is the genuinely slow path (chain history per wallet) -- tell the
-                # user what is happening and roughly how long it will take.
-                await context.topic_manager.send_command_response(
-                    self._create_rebuilding_card(date_str, len(targets)), msg_type="interactive")
-                # PROD SAFETY: run reconstruction on a DEDICATED bounded thread pool -- never the
-                # default executor the LIVE /check path uses -- so stale/slow gap-date threads can
-                # never saturate it and starve live checks. One outer budget caps total lock-hold;
-                # each transfer fetch is itself page/time-capped in balance_service so a single
-                # thread can't run unbounded. Completion is tracked by task identity, so every
-                # wallet lands in rows XOR unavailable exactly once.
-                loop = asyncio.get_event_loop()
-                recon_pool = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=self.RECON_CONCURRENCY, thread_name_prefix="recon")
-                try:
-                    fut_to_w = {}
-                    for w in targets:
-                        f = loop.run_in_executor(
-                            recon_pool, self.balance_service.get_balance_at,
-                            w["address"], w.get("chain", "TRC20"), cutoff_ms)
-                        fut_to_w[f] = w
-                    done, pending = await asyncio.wait(
-                        list(fut_to_w.keys()), timeout=self.RECON_TOTAL_BUDGET)
-                    for f in pending:
-                        f.cancel()                       # queued futures never run
-                        unavailable.append(fut_to_w[f]["wallet"])
-                    for f in done:
-                        w = fut_to_w[f]
-                        try:
-                            bal = f.result()
-                        except Exception as e:
-                            logger.error(f"Reconstruction failed for {w['wallet']} "
-                                         f"({w.get('chain', 'TRC20')}): {e}")
-                            bal = None
-                        if bal is None:
-                            unavailable.append(w["wallet"])
-                        else:
-                            rows.append({"name": w["wallet"], "company": w["company"],
-                                         "address": w["address"], "balance": bal,
-                                         "source": "reconstructed"})
-                finally:
-                    recon_pool.shutdown(wait=False)      # never block the event loop
+            await self._rebuild_entries(todo, cutoff_ms)
 
-            # RELIABILITY: never leave a wallet with no number. Some wallets simply cannot
-            # be rebuilt from transfer history (a very busy wallet can exceed 10,000
-            # transfers in a single day, which is Tronscan's hard listing cap). For those,
-            # fall back to the closest saved record and label the row, instead of dropping
-            # the wallet and understating the total.
-            fallback_used = []
-            if unavailable and nearest_snapshot:
-                still_unavailable = []
-                by_addr = {canonical_address(w["address"]): w for w in targets}
-                for wallet_name in unavailable:
-                    w = next((x for x in targets if x["wallet"] == wallet_name), None)
-                    entry = nearest_snapshot.get(canonical_address(w["address"])) if w else None
-                    if entry:
-                        rows.append({"name": w["wallet"], "company": w["company"],
-                                     "address": w["address"], "balance": entry["balance"],
-                                     "source": "nearest"})
-                        fallback_used.append(w["wallet"])
-                    else:
-                        still_unavailable.append(wallet_name)
-                unavailable = still_unavailable
+        # Persist whatever we worked out, so this date never needs rebuilding again.
+        # Partial is fine: a later check rebuilds only what is still missing.
+        fresh = [e for e in entries if e["status"] == "rebuilt"]
+        saved_batch = None
+        if fresh:
+            ok, batch = self.sheets_logger.save_rebuilt_balances(date_str, [
+                {"name": e["name"], "company": e["company"],
+                 "address": e["address"], "balance": e["balance"]} for e in fresh])
+            saved_batch = batch if ok else None
 
-            view = {"rows": rows, "missing": [], "not_found": not_found, "fuzzy": fuzzy,
-                    "unavailable": unavailable, "fallback": fallback_used,
-                    "fallback_date": nearest_date}
-            card = self._create_historical_card(view, date_str, reconstructed=True)
+        card = self._create_historical_card(entries, date_str, fuzzy, not_found, saved_batch)
 
         await context.topic_manager.send_command_response(card, msg_type="interactive")
         return True
+
+    async def _rebuild_entries(self, entries, cutoff_ms):
+        """Work out each entry's balance from chain history, in place.
+
+        Runs on a dedicated pool so slow lookups can never occupy the executor the
+        live /check path uses, and is bounded overall so the command lock is never
+        held indefinitely. Anything unfinished is marked failed, never dropped.
+        """
+        loop = asyncio.get_event_loop()
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.RECON_CONCURRENCY, thread_name_prefix="recon")
+        try:
+            fut_to_entry = {}
+            for e in entries:
+                f = loop.run_in_executor(pool, self.balance_service.get_balance_at,
+                                         e["address"], e.get("chain", "TRC20"), cutoff_ms)
+                fut_to_entry[f] = e
+            done, pending = await asyncio.wait(list(fut_to_entry.keys()),
+                                               timeout=self.RECON_TOTAL_BUDGET)
+            for f in pending:
+                f.cancel()
+                fut_to_entry[f]["status"] = "failed"
+            for f in done:
+                e = fut_to_entry[f]
+                try:
+                    bal = f.result()
+                except Exception as exc:
+                    logger.error(f"Rebuild failed for {e['name']}: {exc}")
+                    bal = None
+                if bal is None:
+                    e["status"] = "failed"
+                else:
+                    e["status"], e["balance"] = "rebuilt", bal
+        finally:
+            pool.shutdown(wait=False)
+
+    def _filter_entries(self, entries, groups, names):
+        """Apply company/wallet-name filters. Returns (entries, fuzzy, not_found)."""
+        if groups:
+            wanted = {g.lower() for g in groups}
+            entries = [e for e in entries if e["company"].lower() in wanted]
+        fuzzy, not_found = {}, []
+        if names:
+            all_names = [e["name"] for e in entries]
+            picked, seen = [], set()
+            for want in names:
+                matches, tier = resolve_fuzzy(want, all_names)
+                if not matches:
+                    not_found.append(want)
+                    continue
+                if tier == "closest match":
+                    fuzzy[want] = matches
+                for e in entries:
+                    if e["name"] in matches and id(e) not in seen:
+                        seen.add(id(e))
+                        picked.append(e)
+            entries = picked
+        return entries, fuzzy, not_found
 
     def _create_balance_table_card_with_sheets_info(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str, not_found: List[str], sheets_logged: bool = False, batch_id: str = None) -> dict:        
         """Create table using Lark's column layout for better formatting with Google Sheets info."""

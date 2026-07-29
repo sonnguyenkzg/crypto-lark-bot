@@ -175,3 +175,46 @@ def test_no_nearest_record_still_reports_wallet_as_unavailable():
     blob = _blob(_run(h, ["[2026-07-20]"])[-1])
     assert "No figure available" in blob
     assert "KZP 96G1" in blob
+
+
+def test_only_missing_wallets_are_rebuilt_and_saved():
+    """A wallet with a saved figure must not be rebuilt; the missing one is
+    rebuilt AND written back so the date fills itself in."""
+    saved = {"TAAA": {"wallet_name": "KZP 96G1", "company": "KZP", "address": "TAAA",
+                      "balance": Decimal("19.41"), "batch_id": "20260720000112",
+                      "time": "00:01:12"}}
+    rebuilt_for, saved_rows = [], {}
+    h = CheckHandler()
+    h.wallet_service.list_wallets = lambda: (True, ROSTER)
+    h.sheets_logger.get_snapshot_and_nearest = lambda d: (saved, None, {})
+
+    def fake_rebuild(addr, chain, cutoff):
+        rebuilt_for.append(addr)
+        return Decimal("10.00")
+    h.balance_service.get_balance_at = fake_rebuild
+    h.sheets_logger.save_rebuilt_balances = (
+        lambda date_str, rows: saved_rows.update(date=date_str, rows=rows) or (True, "B123"))
+
+    blob = _blob(_run(h, ["[2026-07-20]"])[-1])
+    assert rebuilt_for == ["0xabc0000000000000000000000000000000000001"]  # ONLY the missing one
+    assert [r["name"] for r in saved_rows["rows"]] == ["Eth One"]
+    assert saved_rows["date"] == "2026-07-20"
+    assert "29.41" in blob                       # 19.41 saved + 10.00 rebuilt
+    assert "B123" in blob                        # batch id shown on the card
+
+
+def test_nothing_saved_when_nothing_was_rebuilt():
+    saved = {"TAAA": {"wallet_name": "KZP 96G1", "company": "KZP", "address": "TAAA",
+                      "balance": Decimal("19.41"), "batch_id": "b", "time": "t"},
+             "0xabc0000000000000000000000000000000000001": {
+                 "wallet_name": "Eth One", "company": "KZO",
+                 "address": "0xabc0000000000000000000000000000000000001",
+                 "balance": Decimal("5.00"), "batch_id": "b", "time": "t"}}
+    calls = []
+    h = CheckHandler()
+    h.wallet_service.list_wallets = lambda: (True, ROSTER)
+    h.sheets_logger.get_snapshot_and_nearest = lambda d: (saved, None, {})
+    h.sheets_logger.save_rebuilt_balances = lambda d, r: calls.append(r) or (True, "X")
+    blob = _blob(_run(h, ["[2026-07-20]"])[-1])
+    assert calls == []                           # nothing to save -> no write
+    assert "saved to Google Sheets" not in blob  # and no footer line
