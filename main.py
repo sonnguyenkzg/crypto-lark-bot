@@ -481,7 +481,11 @@ class LarkDailyReportScheduler:
             try:
                 success, batch_id = self.sheets_logger.log_balance_check(balances, wallet_data, check_type="scheduled")
                 sheets_logged = success
-                logger.info("✅ Successfully logged daily report to Google Sheets")
+                if success:
+                    logger.info("✅ Successfully logged daily report to Google Sheets")
+                else:
+                    logger.error("❌ FAILED to log daily report to Google Sheets - "
+                                 "this date will be MISSING from history")
             except Exception as e:
                 logger.warning(f"Failed to log daily report to Google Sheets: {e}")
                 sheets_logged = False

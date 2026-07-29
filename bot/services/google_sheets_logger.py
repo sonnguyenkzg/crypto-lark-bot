@@ -1,4 +1,5 @@
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 import os
@@ -11,6 +12,9 @@ from bot.services.chain_detector import canonical_address
 
 class GoogleSheetsBalanceLogger:
     """Logger for balance check results to Google Sheets"""
+
+    WRITE_RETRIES = 4          # retries on transient Sheets failures (5xx/429/timeout)
+    WRITE_RETRY_BACKOFF = 2.0  # seconds; doubles per retry (2, 4, 8, 16)
     
     def __init__(self):
         self.credentials_file = os.getenv('GOOGLE_CREDENTIALS_FILE')
@@ -88,12 +92,12 @@ class GoogleSheetsBalanceLogger:
         """
         if not self.credentials_file or not self.spreadsheet_id:
             logger.warning("Google Sheets credentials not configured, skipping logging")
-            return False
+            return False, None
             
         try:
             if not self._initialize_service():
-                return False
-                
+                return False, None
+
             # Generate batch ID
             batch_id = self._generate_batch_id()
             
@@ -102,8 +106,8 @@ class GoogleSheetsBalanceLogger:
             
             if not data_rows:
                 logger.warning("No successful balance data to log")
-                return False
-            
+                return False, None
+
             # Determine sheet name based on check type
             sheet_name = "CHECK" if check_type == "manual" else "DAILY_REPORT"
             
@@ -117,14 +121,43 @@ class GoogleSheetsBalanceLogger:
                 'majorDimension': 'ROWS'
             }
             
-            result = self.sheet.values().append(
-                spreadsheetId=self.spreadsheet_id,
-                range=range_name,
-                valueInputOption='RAW',
-                insertDataOption='INSERT_ROWS',
-                body=body
-            ).execute()
-            
+            # RELIABILITY: a transient Google Sheets outage must not lose the day's data.
+            # On 2026-07-19 a single HTTP 503 here silently dropped a whole daily snapshot,
+            # leaving a permanent hole in the history. Retry transient failures (5xx / 429 /
+            # timeouts) with exponential backoff before giving up.
+            result = None
+            last_error = None
+            delay = self.WRITE_RETRY_BACKOFF
+            for attempt in range(self.WRITE_RETRIES + 1):
+                try:
+                    result = self.sheet.values().append(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=range_name,
+                        valueInputOption='RAW',
+                        insertDataOption='INSERT_ROWS',
+                        body=body
+                    ).execute()
+                    break
+                except HttpError as e:
+                    status = getattr(getattr(e, "resp", None), "status", None)
+                    last_error = e
+                    if status not in (429, 500, 502, 503, 504) or attempt >= self.WRITE_RETRIES:
+                        raise
+                    logger.warning(f"Sheets append failed (HTTP {status}); retrying in {delay:.1f}s "
+                                   f"({attempt + 1}/{self.WRITE_RETRIES})")
+                except (TimeoutError, OSError) as e:
+                    last_error = e
+                    if attempt >= self.WRITE_RETRIES:
+                        raise
+                    logger.warning(f"Sheets append failed ({e}); retrying in {delay:.1f}s "
+                                   f"({attempt + 1}/{self.WRITE_RETRIES})")
+                time.sleep(delay)
+                delay *= 2
+
+            if result is None:
+                logger.error(f"Sheets append gave up after {self.WRITE_RETRIES} retries: {last_error}")
+                return False, None
+
             updated_cells = result.get('updates', {}).get('updatedCells', 0)
             logger.info(f"✅ Logged {len(data_rows)} balance records to {sheet_name} sheet ({updated_cells} cells)")
             logger.info(f"📝 Batch ID: {batch_id}")

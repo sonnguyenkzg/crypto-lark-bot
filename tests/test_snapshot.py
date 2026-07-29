@@ -70,3 +70,37 @@ def test_malformed_rows_excluded_not_crash():
     snap = L._build_snapshot_from_rows(rows, "2026-07-15")
     assert set(snap.keys()) == {"TAAA"}
     assert snap["TAAA"]["balance"] == Decimal("7.00")
+
+
+def test_write_retries_transient_failure_then_succeeds(monkeypatch):
+    """A transient Sheets 503 must NOT lose the day's data (root cause of the 2026-07-20 gap)."""
+    from googleapiclient.errors import HttpError
+    from decimal import Decimal as D
+
+    logger_obj = GoogleSheetsBalanceLogger()
+    logger_obj.credentials_file = "x"; logger_obj.spreadsheet_id = "y"
+    logger_obj.WRITE_RETRY_BACKOFF = 0.01          # keep the test fast
+    monkeypatch.setattr(logger_obj, "_initialize_service", lambda: True)
+    monkeypatch.setattr(logger_obj, "_ensure_headers", lambda name: None)
+
+    class _Resp:  # minimal googleapiclient error shape (real ones carry .reason too)
+        status = 503
+        reason = "Service Unavailable"
+    calls = {"n": 0}
+
+    class _Append:
+        def execute(self):
+            calls["n"] += 1
+            if calls["n"] <= 2:                    # fail twice, then succeed
+                raise HttpError(_Resp(), b"service unavailable")
+            return {"updates": {"updatedCells": 8}}
+
+    class _Values:
+        def append(self, **kw): return _Append()
+
+    monkeypatch.setattr(logger_obj, "sheet", type("S", (), {"values": lambda self: _Values()})())
+
+    ok, batch = logger_obj.log_balance_check(
+        {"W": D("1.00")}, {"W": {"company": "C", "address": "TAAA"}}, check_type="scheduled")
+    assert ok is True and batch          # data landed instead of being lost
+    assert calls["n"] == 3               # proves it retried rather than giving up
