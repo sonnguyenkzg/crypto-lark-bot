@@ -11,51 +11,34 @@ from typing import Any, Tuple, Union
 
 from bot.services.wallet_service import WalletService
 from bot.services.chain_detector import get_chain_emoji, detect_chain_from_address, canonical_address
+from bot.services.command_args import parse_arguments
 
 logger = logging.getLogger(__name__)
 
 class RemoveHandler:
     def __init__(self):
         self.name = "remove"
-        self.description = "Remove a wallet (requires 1 quoted wallet name or address)"
-        self.usage = '/remove "wallet_name_or_address"'
+        self.description = "Remove a wallet (requires 1 wallet name or address in brackets)"
+        self.usage = '/remove [wallet_name_or_address]'
         self.aliases = ["delete", "del"]
         self.enabled = True
         self.wallet_service = WalletService()
 
-    def extract_quoted_strings(self, text: str) -> list:
-        """Extract quoted strings from text."""
-        pattern = r'["\']([^"\']*)["\']'
-        matches = re.findall(pattern, text)
-        return matches
-
     def parse_single_quoted_argument(self, text: str) -> Tuple[bool, Union[str, str]]:
-        """
-        Parse text with single quoted argument.
-        Expects exactly 1 quoted string: "wallet_name_or_address"
-        
-        Args:
-            text: Command text from user
-            
-        Returns:
-            Tuple[bool, Union[str, str]]: (success, wallet_identifier or error_message)
+        """Parse the single [wallet name or address] argument.
+
+        Accepts [brackets] (preferred) or "quotes" (still supported).
+        Returns (success, wallet_identifier) or (False, error_message).
         """
         if not text or not text.strip():
             return False, "❌ Missing wallet name or address"
-        
-        # Extract quoted strings
-        matches = self.extract_quoted_strings(text)
-        
+
+        matches, _ = parse_arguments(text)
+
         if len(matches) != 1:
-            return False, f"❌ Expected 1 quoted argument, found {len(matches)}"
-        
-        wallet_identifier = matches[0].strip()
-        
-        # Validate wallet identifier is not empty
-        if not wallet_identifier:
-            return False, "❌ Wallet name or address cannot be empty"
-        
-        return True, wallet_identifier
+            return False, f"❌ Expected 1 argument in [ ] (or quotes), found {len(matches)}"
+
+        return True, matches[0].strip()
 
     def _match_address(self, identifier, wallets_list):
         """Return the wallet dict whose address matches `identifier` by canonical
@@ -326,14 +309,14 @@ class RemoveHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Usage:** `/remove \"wallet_name_or_address\"`"
+                        "content": "**Usage:** /remove [wallet name or address]"
                     }
                 },
                 {
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Examples:**\n• `/remove \"KZP TEST1\"` (by name)\n• `/remove \"TDgWVGJKktTMaGt9fLJhTr7PHY3hEfk6BU\"` (by address)"
+                        "content": "**Examples:**\n• /remove [KZP TEST1] (by name)\n• /remove [TDgWVGJKktTMaGt9fLJhTr7PHY3hEfk6BU] (by address)"
                     }
                 },
                 {
@@ -375,14 +358,14 @@ class RemoveHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Usage:** `/remove \"wallet_name_or_address\"`"
+                        "content": "**Usage:** /remove [wallet name or address]"
                     }
                 },
                 {
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": "**Examples:**\n• `/remove \"KZP TEST1\"` (by name)\n• `/remove \"TDgWVGJKktTMaGt9fLJhTr7PHY3hEfk6BU\"` (by address)"
+                        "content": "**Examples:**\n• /remove [KZP TEST1] (by name)\n• /remove [TDgWVGJKktTMaGt9fLJhTr7PHY3hEfk6BU] (by address)"
                     }
                 },
                 {
