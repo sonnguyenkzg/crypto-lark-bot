@@ -380,8 +380,7 @@ class CheckHandler:
 
         if snapshot:
             view = self.build_historical_view(snapshot, roster, groups, names, date_str)
-            source = f"Daily snapshot (DAILY_REPORT) — {date_str} · {len(snapshot)} wallets"
-            card = self._create_historical_card(view, date_str, source, reconstructed=False)
+            card = self._create_historical_card(view, date_str, reconstructed=False)
         else:
             # Gap: no snapshot logged for this date -- reconstruct the current roster's
             # balances as of date_str 00:01 GMT+7 from on-chain transfer history.
@@ -460,8 +459,7 @@ class CheckHandler:
             view = {"rows": rows, "missing": [], "not_found": not_found, "fuzzy": fuzzy,
                     "unavailable": unavailable, "fallback": fallback_used,
                     "fallback_date": nearest_date}
-            source = f"Reconstructed from chain — no snapshot for {date_str}"
-            card = self._create_historical_card(view, date_str, source, reconstructed=True)
+            card = self._create_historical_card(view, date_str, reconstructed=True)
 
         await context.topic_manager.send_command_response(card, msg_type="interactive")
         return True
@@ -860,7 +858,7 @@ class CheckHandler:
             "elements": elements
         }
 
-    def _create_historical_card(self, view: Dict, date_str: str, source: str, reconstructed: bool = False) -> dict:
+    def _create_historical_card(self, view: Dict, date_str: str, reconstructed: bool = False) -> dict:
         """Card for `/check [date]`. REUSES the group-subtotal + grand-total table layout
         from _create_balance_table_card_with_sheets_info (built by feeding it the
         historical rows as a name->balance dict), then swaps that builder's LIVE header
@@ -904,18 +902,36 @@ class CheckHandler:
         # keep as the separator between OUR header and its grouped-totals/detail table.
         table_elements = base_card["elements"][3:]
 
+        # One summary line. The card header already carries the title, the date and the grand
+        # total, so we never repeat those -- instead say how many wallets are shown and where
+        # each figure came from. Counts come from the rows actually shown, so a filtered check
+        # reports what you can see rather than the whole day's wallet count.
+        shown = len(rows)
+        n_rebuilt = sum(1 for r in rows if r.get("source") == "reconstructed")
+        n_borrowed = sum(1 for r in rows if r.get("source") == "nearest")
+        n_saved = shown - n_rebuilt - n_borrowed
+        fb = view.get("fallback_date")
+        sources = []
+        if n_saved:
+            sources.append((n_saved, "read from the balances saved that day"))
+        if n_rebuilt:
+            sources.append((n_rebuilt, "rebuilt from blockchain records"))
+        if n_borrowed:
+            sources.append((n_borrowed, f"taken from the {fb} saved record" if fb
+                                        else "taken from an earlier saved record"))
+        if not sources:
+            summary = "📊 **No wallets to show.**"
+        elif len(sources) == 1:
+            # single source -> don't repeat the count ("69 wallets - 69 from ...")
+            summary = f"📊 **{shown} {'wallet' if shown == 1 else 'wallets'}**, {sources[0][1]}."
+        else:
+            summary = (f"📊 **{shown} wallets** — "
+                       + ", ".join(f"{c} {d}" for c, d in sources) + ".")
+
         header_elements = [
             {
                 "tag": "div",
-                "text": {"tag": "lark_md", "content": "🕰️ **Historical Wallet Balance Check**"}
-            },
-            {
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": f"📅 **Date:** {date_str}"}
-            },
-            {
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": f"ℹ️ **Source:** {source}"}
+                "text": {"tag": "lark_md", "content": summary}
             },
         ]
 
