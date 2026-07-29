@@ -110,52 +110,16 @@ class GoogleSheetsBalanceLogger:
 
             # Determine sheet name based on check type
             sheet_name = "CHECK" if check_type == "manual" else "DAILY_REPORT"
-            
+
             # Check if headers exist, if not add them
             self._ensure_headers(sheet_name)
-            
-            # Append data to sheet
-            range_name = f"{sheet_name}!A:H"
-            body = {
-                'values': data_rows,
-                'majorDimension': 'ROWS'
-            }
-            
+
             # RELIABILITY: a transient Google Sheets outage must not lose the day's data.
             # On 2026-07-19 a single HTTP 503 here silently dropped a whole daily snapshot,
             # leaving a permanent hole in the history. Retry transient failures (5xx / 429 /
             # timeouts) with exponential backoff before giving up.
-            result = None
-            last_error = None
-            delay = self.WRITE_RETRY_BACKOFF
-            for attempt in range(self.WRITE_RETRIES + 1):
-                try:
-                    result = self.sheet.values().append(
-                        spreadsheetId=self.spreadsheet_id,
-                        range=range_name,
-                        valueInputOption='RAW',
-                        insertDataOption='INSERT_ROWS',
-                        body=body
-                    ).execute()
-                    break
-                except HttpError as e:
-                    status = getattr(getattr(e, "resp", None), "status", None)
-                    last_error = e
-                    if status not in (429, 500, 502, 503, 504) or attempt >= self.WRITE_RETRIES:
-                        raise
-                    logger.warning(f"Sheets append failed (HTTP {status}); retrying in {delay:.1f}s "
-                                   f"({attempt + 1}/{self.WRITE_RETRIES})")
-                except (TimeoutError, OSError) as e:
-                    last_error = e
-                    if attempt >= self.WRITE_RETRIES:
-                        raise
-                    logger.warning(f"Sheets append failed ({e}); retrying in {delay:.1f}s "
-                                   f"({attempt + 1}/{self.WRITE_RETRIES})")
-                time.sleep(delay)
-                delay *= 2
-
+            result = self._append_rows_with_retry(sheet_name, data_rows)
             if result is None:
-                logger.error(f"Sheets append gave up after {self.WRITE_RETRIES} retries: {last_error}")
                 return False, None
 
             updated_cells = result.get('updates', {}).get('updatedCells', 0)
@@ -169,7 +133,84 @@ class GoogleSheetsBalanceLogger:
         except Exception as e:
             logger.error(f"Failed to log balance check to Google Sheets: {e}")
             return False, None
-    
+
+    def _append_rows_with_retry(self, sheet_name, data_rows):
+        """Append rows, retrying transient Sheets failures (5xx/429/timeout).
+
+        A single HTTP 503 here once silently lost a whole day of history, so a
+        transient failure must never be treated as final. Returns the API result,
+        or None if it kept failing.
+        """
+        body = {"values": data_rows, "majorDimension": "ROWS"}
+        delay = self.WRITE_RETRY_BACKOFF
+        last_error = None
+        for attempt in range(self.WRITE_RETRIES + 1):
+            try:
+                return self.sheet.values().append(
+                    spreadsheetId=self.spreadsheet_id,
+                    range=f"{sheet_name}!A:H",
+                    valueInputOption="RAW",
+                    insertDataOption="INSERT_ROWS",
+                    body=body,
+                ).execute()
+            except HttpError as e:
+                status = getattr(getattr(e, "resp", None), "status", None)
+                last_error = e
+                if status not in (429, 500, 502, 503, 504) or attempt >= self.WRITE_RETRIES:
+                    raise
+                logger.warning(f"Sheets append failed (HTTP {status}); retrying in "
+                               f"{delay:.1f}s ({attempt + 1}/{self.WRITE_RETRIES})")
+            except (TimeoutError, OSError) as e:
+                last_error = e
+                if attempt >= self.WRITE_RETRIES:
+                    raise
+                logger.warning(f"Sheets append failed ({e}); retrying in "
+                               f"{delay:.1f}s ({attempt + 1}/{self.WRITE_RETRIES})")
+            time.sleep(delay)
+            delay *= 2
+        logger.error(f"Sheets append gave up after {self.WRITE_RETRIES} retries: {last_error}")
+        return None
+
+    def save_rebuilt_balances(self, date_str, rows):
+        """Write rebuilt balances into the daily record for `date_str`.
+
+        These fill a hole in the history so the date never needs rebuilding again.
+        They are marked "rebuilt" so they stay distinguishable from figures that
+        were actually measured on the day.
+
+        rows: [{"name", "company", "address", "balance"}]
+        Returns (success, batch_id).
+        """
+        if not rows:
+            return False, None
+        if not self.credentials_file or not self.spreadsheet_id:
+            logger.warning("Google Sheets not configured; rebuilt balances not saved")
+            return False, None
+        try:
+            if not self._initialize_service():
+                return False, None
+            batch_id = self._generate_batch_id()
+            now = datetime.now(timezone(timedelta(hours=7)))
+            data_rows = [[
+                batch_id,
+                date_str,                       # the date these balances describe
+                now.strftime("%H:%M:%S"),       # when we worked them out
+                r["name"],
+                r.get("company", "Unknown"),
+                r.get("address", ""),
+                f"{r['balance']:.2f}",
+                "rebuilt",
+            ] for r in rows]
+            self._ensure_headers("DAILY_REPORT")
+            if self._append_rows_with_retry("DAILY_REPORT", data_rows) is None:
+                return False, None
+            logger.info(f"✅ Saved {len(data_rows)} rebuilt balances for {date_str} "
+                        f"(batch {batch_id})")
+            return True, batch_id
+        except Exception as e:
+            logger.error(f"Failed to save rebuilt balances for {date_str}: {e}")
+            return False, None
+
     def _ensure_headers(self, sheet_name):
         """Ensure the sheet has proper headers"""
         try:
