@@ -317,72 +317,14 @@ class CheckHandler:
                         "status": "removed_but_saved", "balance": entry["balance"]})
         return out
 
-    def _filter_roster(self, items, groups, names, name_key="wallet"):
-        """Group + exact/fuzzy name filter, SHARED by both historical paths:
-        - build_historical_view calls it against snapshot entries (name_key='wallet_name')
-        - the reconstruction gap-path calls it against the current roster (name_key='wallet',
-          the default)
-        A token that matches a company name selects that whole group; a name token is
-        matched exactly first, then falls back to a fuzzy match (recorded in `fuzzy`) so a
-        near-miss still resolves instead of silently returning nothing; a name with no
-        match at all -> `not_found`, never silently dropped.
-
-        Returns (selected_items, fuzzy_map, not_found_list).
-        """
-        selected = list(items)
-        if groups:
-            gl = {g.lower() for g in groups}
-            selected = [v for v in selected if v.get("company", "").lower() in gl]
-        fuzzy = {}
-        not_found = []
-        if names:
-            picked = {}
-            base = selected if groups else list(items)
-            base_names = [v[name_key] for v in base]
-            for want in names:
-                exact = [v for v in base if v[name_key].lower() == want.lower()]
-                if exact:
-                    for v in exact:
-                        picked[v["address"]] = v
-                    continue
-                close = resolve_fuzzy(want, base_names)
-                if close:
-                    fuzzy[want] = close
-                    for v in base:
-                        if v[name_key] in close:
-                            picked[v["address"]] = v
-                else:
-                    not_found.append(want)
-            selected = list(picked.values())
-        return selected, fuzzy, not_found
-
-    def build_historical_view(self, snapshot, current_roster, groups, names, date_str):
-        """Pure: turn a snapshot + filters into rows + warnings. See interface block."""
-        # 1. choose which snapshot entries to show
-        selected, fuzzy, not_found = self._filter_roster(
-            list(snapshot.values()), groups, names, name_key="wallet_name")
-        rows = [{"name": v["wallet_name"], "company": v["company"],
-                 "address": v["address"], "balance": v["balance"], "source": "snapshot"}
-                for v in selected]
-        # 2. completeness guard vs CURRENT roster (only when unfiltered)
-        missing = []
-        if not groups and not names:
-            snap_addrs = {canonical_address(v["address"]) for v in snapshot.values()}
-            for w in current_roster:
-                if not self._existed_by(w.get("created_at"), date_str):
-                    continue
-                if canonical_address(w.get("address", "")) not in snap_addrs:
-                    missing.append(w.get("wallet"))
-        return {"rows": rows, "missing": missing, "not_found": not_found, "fuzzy": fuzzy}
-
     async def _handle_historical(self, context: Any, date_str: str, other_tokens: List[str],
                                   wallet_data: Dict) -> bool:
         """Route for `/check [date] ...`.
 
         Validates the date, classifies the remaining tokens into group/name filters,
-        then either renders the DAILY_REPORT snapshot for that date (if one was logged)
-        or -- on a gap day with no snapshot -- reconstructs the current roster's
-        balances as of {date_str} 00:01 GMT+7 from on-chain transfer history.
+        then resolves each wallet INDEPENDENTLY for that date (classify_wallets): already
+        saved, rebuilt from chain history and saved back, added after the date, or failed.
+        Whatever gets rebuilt is written back, so this date is never fully rebuilt twice.
         """
         if not is_valid_iso_date(date_str):
             await context.topic_manager.send_command_response(
@@ -394,12 +336,6 @@ class CheckHandler:
             await context.topic_manager.send_command_response(
                 self._create_future_date_card(date_str), msg_type="interactive")
             return False
-
-        # Acknowledge immediately (same courtesy as the live /check path): reading the
-        # sheet takes a moment and a gap date can take up to ~90s to rebuild, so the user
-        # should never be left staring at silence.
-        await context.topic_manager.send_command_response(
-            self._create_historical_checking_card(date_str), msg_type="interactive")
 
         companies = sorted({info["company"] for info in wallet_data.values()})
         names_all = [info["wallet"] for info in wallet_data.values()]
@@ -414,6 +350,14 @@ class CheckHandler:
 
         entries = self.classify_wallets(roster, snapshot, date_str)
         entries, fuzzy, not_found = self._filter_entries(entries, groups, names)
+
+        # Acknowledge immediately (same courtesy as the live /check path): reading the
+        # sheet takes a moment and a gap date can take up to ~90s to rebuild, so the user
+        # should never be left staring at silence. Sent AFTER filters are resolved so it
+        # can report the match count, echoing back what was understood.
+        await context.topic_manager.send_command_response(
+            self._create_historical_checking_card(date_str, groups, names, len(entries)),
+            msg_type="interactive")
 
         todo = [e for e in entries if e["status"] == "needs_rebuild"]
         if todo:
@@ -890,29 +834,12 @@ class CheckHandler:
             "elements": elements
         }
 
-    def _create_historical_card(self, view: Dict, date_str: str, reconstructed: bool = False) -> dict:
-        """Card for `/check [date]`. REUSES the group-subtotal + grand-total table layout
-        from _create_balance_table_card_with_sheets_info (built by feeding it the
-        historical rows as a name->balance dict), then swaps that builder's LIVE header
-        (title/time/wallet-count) for a historical one and adds completeness/fuzzy/
-        unavailable notes. The "not found" note is inherited for free since we pass
-        view["not_found"] straight through to the reused builder.
-        """
-        rows = view.get("rows", [])
-        # A display name can legitimately map to TWO different addresses in a historical
-        # snapshot (a wallet renamed/rotated over time -- see
-        # test_same_name_different_address_both_kept in tests/test_snapshot.py), unlike the
-        # live path where wallets.json keys wallets by name so this can't happen. The reused
-        # builder below is keyed by display name, so a bare name->row dict would let one
-        # collide-and-drop the other, silently under-reporting the total.
-        #
-        # Guarantee a globally UNIQUE key per row by checking against what's actually been
-        # assigned so far (`key in balances`), not by reasoning about what "should" be
-        # unique -- an assumption-based disambiguator (e.g. a truncated address suffix, or
-        # even the full canonical address) can itself coincide with some other row's literal
-        # name. Escalating against the real, growing dict is correct by construction for any
-        # input: it can never silently overwrite, because a used key always gets pushed to a
-        # longer, still-checked alternative. The common (unique-name) case is untouched.
+    def _create_historical_card(self, entries, date_str, fuzzy, not_found, saved_batch):
+        """Balance table for a past date, plus a plain account of where each figure came from."""
+        counted = [e for e in entries if e["balance"] is not None]
+        rows = [{"name": e["name"], "company": e["company"], "address": e["address"],
+                 "balance": e["balance"], "source": e["status"]} for e in counted]
+
         balances, wallets_to_check = {}, {}
         for r in rows:
             key = r["name"]
@@ -927,100 +854,64 @@ class CheckHandler:
 
         base_card = self._create_balance_table_card_with_sheets_info(
             balances, wallets_to_check, time_str=date_str,
-            not_found=view.get("not_found", []), sheets_logged=False, batch_id=None)
-
-        # The reused builder's first 3 elements are its own live-check header
-        # (title/time/wallet-count); element[3] is the "hr" right after them, which we
-        # keep as the separator between OUR header and its grouped-totals/detail table.
+            not_found=[], sheets_logged=False, batch_id=None)
         table_elements = base_card["elements"][3:]
 
-        # One summary line. The card header already carries the title, the date and the grand
-        # total, so we never repeat those -- instead say how many wallets are shown and where
-        # each figure came from. Counts come from the rows actually shown, so a filtered check
-        # reports what you can see rather than the whole day's wallet count.
-        shown = len(rows)
-        n_rebuilt = sum(1 for r in rows if r.get("source") == "reconstructed")
-        n_borrowed = sum(1 for r in rows if r.get("source") == "nearest")
-        n_saved = shown - n_rebuilt - n_borrowed
-        fb = view.get("fallback_date")
-        sources = []
+        n_saved = sum(1 for e in counted if e["status"] == "saved")
+        n_rebuilt = sum(1 for e in counted if e["status"] == "rebuilt")
+        n_removed = sum(1 for e in counted if e["status"] == "removed_but_saved")
+        parts = []
         if n_saved:
-            sources.append((n_saved, "read from the balances saved that day"))
+            parts.append(f"{n_saved} saved")
         if n_rebuilt:
-            sources.append((n_rebuilt, "rebuilt from blockchain records"))
-        if n_borrowed:
-            sources.append((n_borrowed, f"taken from the {fb} saved record" if fb
-                                        else "taken from an earlier saved record"))
-        if not sources:
-            summary = "📊 **No wallets to show.**"
-        elif len(sources) == 1:
-            # single source -> don't repeat the count ("69 wallets - 69 from ...")
-            summary = f"📊 **{shown} {'wallet' if shown == 1 else 'wallets'}**, {sources[0][1]}."
-        else:
-            summary = (f"📊 **{shown} wallets** — "
-                       + ", ".join(f"{c} {d}" for c, d in sources) + ".")
+            parts.append(f"{n_rebuilt} rebuilt")
+        if n_removed:
+            parts.append(f"{n_removed} no longer in your list")
+        summary = (f"📊 **{len(counted)} {'wallet' if len(counted) == 1 else 'wallets'} counted**"
+                   + (" — " + ", ".join(parts) if parts else ""))
 
-        header_elements = [
-            {
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": summary}
-            },
-        ]
+        header_elements = [{"tag": "div", "text": {"tag": "lark_md", "content": summary}}]
 
-        if view.get("missing"):
-            header_elements.append({
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "⚠️ **Completeness warning — expected but missing from this "
-                                f"snapshot:** {', '.join(view['missing'])}"
-                }
-            })
+        later = [e["name"] for e in entries if e["status"] == "not_yet_created"]
+        if later:
+            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                f"➕ **{len(later)} more were added after this date**, so they have no balance "
+                f"yet: {', '.join(later)}"}})
 
-        if view.get("fuzzy"):
-            fuzzy_lines = "\n".join(
-                f'🔍 "{want}" ≈ closest to "{", ".join(matches)}"'
-                for want, matches in view["fuzzy"].items()
-            )
-            header_elements.append({
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": fuzzy_lines}
-            })
+        failed = [e["name"] for e in entries if e["status"] == "failed"]
+        if failed:
+            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                f"🚫 **could not be worked out** (not counted): {', '.join(failed)}"}})
 
-        if view.get("fallback"):
-            fb_date = view.get("fallback_date") or "the closest saved date"
-            header_elements.append({
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"📌 **{', '.join(view['fallback'])}** — too many daily "
-                               f"transactions to rebuild, so the balance saved on {fb_date} "
-                               "is shown instead. Counted in the total."
-                }
-            })
+        removed = [e["name"] for e in counted if e["status"] == "removed_but_saved"]
+        if removed:
+            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                f"📌 **No longer in your list** but held a balance that day, so still "
+                f"counted: {', '.join(removed)}"}})
 
-        if view.get("unavailable"):
-            header_elements.append({
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": "🚫 **No figure available (excluded from total):** "
-                                f"{', '.join(view['unavailable'])}"
-                }
-            })
+        for want, matches in (fuzzy or {}).items():
+            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                f'🔍 Showing **{", ".join(matches)}** — closest match to "{want}".'}})
+
+        for want in (not_found or []):
+            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                f'❌ Wallet "{want}" not found.'}})
+
+        header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+            f"⏰ **Time:** {self.balance_service.get_current_gmt_time()} GMT+7"}})
+
+        if saved_batch:
+            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                f"📈 **{n_rebuilt} rebuilt {'balance' if n_rebuilt == 1 else 'balances'} "
+                f"saved to Google Sheets** (Batch ID: {saved_batch})"}})
 
         base_card["elements"] = header_elements + table_elements
         grand_total = sum(balances.values()) if balances else Decimal("0")
         base_card["header"] = {
-            "template": "purple" if reconstructed else "blue",
-            "title": {
-                "tag": "plain_text",
-                "content": "🕰️ Historical Wallet Balance Check"
-            },
-            "subtitle": {
-                "tag": "plain_text",
-                "content": f"{date_str} · Total: {grand_total:,.2f} USDT"
-            }
+            "template": "purple" if n_rebuilt else "blue",
+            "title": {"tag": "plain_text", "content": "🕰️ Historical Wallet Balance Check"},
+            "subtitle": {"tag": "plain_text",
+                         "content": f"{date_str} · Total: {grand_total:,.2f} USDT"},
         }
         return base_card
 
@@ -1108,38 +999,31 @@ class CheckHandler:
                     "text": {
                         "tag": "lark_md",
                         "content": "⚠️ **Part of your command wasn't recognized and was ignored.**\n\n"
-                                   f"Wrap the date (and any filter) in brackets, e.g. `/check [{date_str}]` "
-                                   f"for a date on its own, or `/check [{date_str}] [KZP]` to also filter "
-                                   "by company or wallet name."
+                                   f"Wrap the date (and any filter) in brackets, like "
+                                   f"**/check [{date_str}]** for a date on its own, or "
+                                   f"**/check [{date_str}] [KZP]** to also filter by company "
+                                   "or wallet name."
                     }
                 }
             ]
         }
 
-    def _create_historical_checking_card(self, date_str: str) -> dict:
-        """Acknowledge a `/check [date]` right away, before the sheet/chain lookup."""
+    def _create_historical_checking_card(self, date_str, groups=None, names=None, matched=None) -> dict:
+        """Confirm what the bot understood, before any waiting begins."""
+        lines = [f"📅 **Date:** {date_str}"]
+        if groups:
+            lines.append(f"🏢 **Company:** {', '.join(groups)}")
+        if names:
+            lines.append(f"👛 **Wallets:** {', '.join(names)}")
+        if matched is not None:
+            lines.append(f"🔎 **Matched {matched} {'wallet' if matched == 1 else 'wallets'}**")
+        lines.append("\nReading saved balances; anything missing will be rebuilt.")
         return {
-            "config": {
-                "wide_screen_mode": True,
-                "enable_forward": False
-            },
-            "header": {
-                "template": "blue",
-                "title": {
-                    "tag": "plain_text",
-                    "content": "🔄 Checking Balances..."
-                }
-            },
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {
-                        "tag": "lark_md",
-                        "content": f"🔄 **Looking up balances for {date_str}...**\n\n"
-                                   "Reading the daily record for that date. This may take a few seconds."
-                    }
-                }
-            ]
+            "config": {"wide_screen_mode": True, "enable_forward": False},
+            "header": {"template": "blue",
+                       "title": {"tag": "plain_text", "content": "🔄 Checking Balances..."}},
+            "elements": [{"tag": "div",
+                          "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
         }
 
     def _create_rebuilding_card(self, date_str: str, wallet_count: int) -> dict:
