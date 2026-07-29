@@ -1,0 +1,55 @@
+from decimal import Decimal
+from bot.handlers.check_handler import CheckHandler
+
+H = CheckHandler()
+
+ROSTER = [
+    {"wallet": "KZP 96G1", "company": "KZP", "address": "TAAA", "chain": "TRC20",
+     "created_at": "2026-01-01 00:00:00"},
+    {"wallet": "KZO ERC A 1", "company": "KZO", "address": "0xABC", "chain": "ERC20",
+     "created_at": "2026-01-01 00:00:00"},
+    {"wallet": "New Wallet", "company": "KZP", "address": "TNEW", "chain": "TRC20",
+     "created_at": "2026-07-24 15:15:55"},
+]
+
+def snap(*items):   # (canonical_address, name, company, balance)
+    return {a: {"wallet_name": n, "company": c, "address": a, "balance": Decimal(b),
+                "batch_id": "20260715000112", "time": "00:01:12"} for a, n, c, b in items}
+
+def by_name(rows):
+    return {r["name"]: r for r in rows}
+
+def test_saved_wallet_uses_its_figure():
+    rows = H.classify_wallets(ROSTER, snap(("TAAA", "KZP 96G1", "KZP", "19.41")), "2026-07-15")
+    r = by_name(rows)["KZP 96G1"]
+    assert r["status"] == "saved" and r["balance"] == Decimal("19.41")
+
+def test_missing_wallet_needs_rebuild():
+    rows = H.classify_wallets(ROSTER, snap(("TAAA", "KZP 96G1", "KZP", "19.41")), "2026-07-15")
+    r = by_name(rows)["KZO ERC A 1"]
+    assert r["status"] == "needs_rebuild" and r["balance"] is None
+    assert r["chain"] == "ERC20"          # carried through for the rebuild call
+
+def test_wallet_created_after_the_date():
+    rows = H.classify_wallets(ROSTER, snap(("TAAA", "KZP 96G1", "KZP", "19.41")), "2026-07-15")
+    assert by_name(rows)["New Wallet"]["status"] == "not_yet_created"
+
+def test_wallet_created_before_the_date_is_expected():
+    rows = H.classify_wallets(ROSTER, {}, "2026-07-25")     # after New Wallet was added
+    assert by_name(rows)["New Wallet"]["status"] == "needs_rebuild"
+
+def test_removed_wallet_with_a_balance_is_kept():
+    # 'Cold wallet' is in the saved record but no longer in wallets.json
+    s = snap(("TAAA", "KZP 96G1", "KZP", "19.41"), ("TOLD", "Cold wallet", "S5", "1250.00"))
+    r = by_name(H.classify_wallets(ROSTER, s, "2026-07-15"))["Cold wallet"]
+    assert r["status"] == "removed_but_saved" and r["balance"] == Decimal("1250.00")
+
+def test_unparseable_created_at_is_treated_as_existing():
+    roster = [{"wallet": "Odd", "company": "KZP", "address": "TODD", "chain": "TRC20",
+               "created_at": "TBD"}]
+    assert H.classify_wallets(roster, {}, "2026-07-15")[0]["status"] == "needs_rebuild"
+
+def test_erc20_address_case_is_ignored():
+    s = snap(("0xabc", "KZO ERC A 1", "KZO", "29629.90"))    # snapshot key lowercased
+    r = by_name(H.classify_wallets(ROSTER, s, "2026-07-15"))["KZO ERC A 1"]
+    assert r["status"] == "saved"          # matched despite roster having 0xABC

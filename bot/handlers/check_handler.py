@@ -280,6 +280,43 @@ class CheckHandler:
             return True                              # unparseable -> safe direction
         return prefix <= date_str
 
+    def classify_wallets(self, roster, snapshot, date_str):
+        """Decide, per wallet, what we can show for `date_str`. Pure - no network.
+
+        wallets.json is the source of truth for which wallets exist, but a wallet
+        that was removed since can still hold a real balance on a past date, so it
+        is kept (otherwise that day's total would silently shrink).
+
+        status: saved              - a figure was recorded that day
+                removed_but_saved  - as above, but no longer in wallets.json
+                needs_rebuild      - existed then, no figure recorded -> work it out
+                not_yet_created    - added after this date, so it has no balance
+        """
+        out = []
+        seen = set()
+        for w in roster:
+            key = canonical_address(w.get("address", ""))
+            seen.add(key)
+            entry = snapshot.get(key)
+            if entry:
+                status, balance = "saved", entry["balance"]
+            elif self._existed_by(w.get("created_at"), date_str):
+                status, balance = "needs_rebuild", None
+            else:
+                status, balance = "not_yet_created", None
+            out.append({"name": w.get("wallet"), "company": w.get("company", "Unknown"),
+                        "address": w.get("address", ""), "chain": w.get("chain", "TRC20"),
+                        "status": status, "balance": balance})
+
+        # figures recorded that day for wallets that are no longer on the list
+        for key, entry in snapshot.items():
+            if key in seen:
+                continue
+            out.append({"name": entry["wallet_name"], "company": entry.get("company", "Unknown"),
+                        "address": entry.get("address", ""), "chain": "TRC20",
+                        "status": "removed_but_saved", "balance": entry["balance"]})
+        return out
+
     def _filter_roster(self, items, groups, names, name_key="wallet"):
         """Group + exact/fuzzy name filter, SHARED by both historical paths:
         - build_historical_view calls it against snapshot entries (name_key='wallet_name')
