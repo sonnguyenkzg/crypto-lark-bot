@@ -6,7 +6,6 @@ Accepts wallet names and TRC20/ERC20 addresses
 """
 
 import logging
-import re
 from typing import Any, Tuple, Union
 
 from bot.services.wallet_service import WalletService

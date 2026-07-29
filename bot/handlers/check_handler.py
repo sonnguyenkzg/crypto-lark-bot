@@ -8,6 +8,7 @@ from bot.services.google_sheets_logger import GoogleSheetsBalanceLogger
 import os
 import logging
 import re
+import time
 import asyncio
 import concurrent.futures
 from collections import defaultdict
@@ -27,12 +28,14 @@ _CHECK_EXECUTION_LOCK = False
 
 class CheckHandler:
     RECON_CONCURRENCY = 3          # low: Tronscan rate-limits bursts (HTTP 429)
-    RECON_TOTAL_BUDGET = 240.0    # total lock-hold cap (only ever used on a gap date)
+    # Total lock-hold cap for rebuilding. Applies whenever ANY wallet has no saved
+    # figure for the requested date -- not just when the whole date is missing.
+    RECON_TOTAL_BUDGET = 240.0
 
     def __init__(self):
         self.name = "check"
         self.description = "Check wallet balances (all wallets or specific ones)"
-        self.usage = '/check [optional: "wallet1" "wallet2"]'
+        self.usage = '/check [optional: date] [optional: company] [optional: wallet]'
         self.aliases = ["balance", "bal"]
         self.enabled = True
         self.wallet_service = WalletService()
@@ -102,6 +105,13 @@ class CheckHandler:
         # CRITICAL: Prevent continuous calling
         if _CHECK_EXECUTION_LOCK:
             logger.warning(f"🚫 Check command already executing - BLOCKING duplicate call from user {context.sender_id}")
+            # Say so out loud: a rebuild can hold this lock for minutes, and silence
+            # makes the bot look dead. A failure to send must not break the guard.
+            try:
+                await context.topic_manager.send_command_response(
+                    self._create_already_running_card(), msg_type="interactive")
+            except Exception as e:
+                logger.warning(f"Could not tell the user a check is already running: {e}")
             return False
         
         # Lock execution
@@ -230,7 +240,10 @@ class CheckHandler:
             sheets_logged = False
             batch_id = None
             try:
-                success, batch_id = self.sheets_logger.log_balance_check(balances, wallets_to_check, check_type="manual")
+                # Off the event loop: this is a blocking Sheets call with retries/backoff,
+                # and the bot serves every other command on this one loop.
+                success, batch_id = await asyncio.to_thread(
+                    self.sheets_logger.log_balance_check, balances, wallets_to_check, "manual")
                 sheets_logged = success
                 logger.info("✅ Successfully logged to Google Sheets")
             except Exception as e:
@@ -341,8 +354,10 @@ class CheckHandler:
         names_all = [info["wallet"] for info in wallet_data.values()]
         groups, names = classify_tokens(other_tokens, companies, names_all)
 
+        # Off the event loop: reading the sheet blocks (and retries), and the bot serves
+        # every other command plus its health check on this single loop.
         snapshot, _nearest_date, _nearest_snapshot = \
-            self.sheets_logger.get_snapshot_and_nearest(date_str)
+            await asyncio.to_thread(self.sheets_logger.get_snapshot_and_nearest, date_str)
 
         roster = [{"wallet": i["wallet"], "company": i["company"], "address": i["address"],
                    "chain": i.get("chain", "TRC20"), "created_at": i.get("created_at")}
@@ -372,9 +387,11 @@ class CheckHandler:
         fresh = [e for e in entries if e["status"] == "rebuilt"]
         saved_batch = None
         if fresh:
-            ok, batch = self.sheets_logger.save_rebuilt_balances(date_str, [
-                {"name": e["name"], "company": e["company"],
-                 "address": e["address"], "balance": e["balance"]} for e in fresh])
+            # Off the event loop: the write retries with backoff for up to ~30s.
+            ok, batch = await asyncio.to_thread(
+                self.sheets_logger.save_rebuilt_balances, date_str, [
+                    {"name": e["name"], "company": e["company"],
+                     "address": e["address"], "balance": e["balance"]} for e in fresh])
             saved_batch = batch if ok else None
 
         card = self._create_historical_card(entries, date_str, fuzzy, not_found, saved_batch)
@@ -385,18 +402,24 @@ class CheckHandler:
     async def _rebuild_entries(self, entries, cutoff_ms):
         """Work out each entry's balance from chain history, in place.
 
-        Runs on a dedicated pool so slow lookups can never occupy the executor the
-        live /check path uses, and is bounded overall so the command lock is never
-        held indefinitely. Anything unfinished is marked failed, never dropped.
+        Runs on a dedicated pool, so slow lookups never occupy the executor the live
+        /check path uses. The *executor* is separate, but the outbound request rate is
+        NOT: the balance service paces every call to a provider process-wide, so a
+        worker still running after we stopped waiting would keep taking that shared
+        budget and starve the next live /check. That is what the deadline bounds -- it
+        is handed to each worker, which stops on its own once the budget expires.
+        Anything unfinished is marked failed, never dropped.
         """
         loop = asyncio.get_event_loop()
         pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=self.RECON_CONCURRENCY, thread_name_prefix="recon")
+        deadline = time.monotonic() + self.RECON_TOTAL_BUDGET
         try:
             fut_to_entry = {}
             for e in entries:
                 f = loop.run_in_executor(pool, self.balance_service.get_balance_at,
-                                         e["address"], e.get("chain", "TRC20"), cutoff_ms)
+                                         e["address"], e.get("chain", "TRC20"), cutoff_ms,
+                                         deadline)
                 fut_to_entry[f] = e
             done, pending = await asyncio.wait(list(fut_to_entry.keys()),
                                                timeout=self.RECON_TOTAL_BUDGET)
@@ -415,7 +438,7 @@ class CheckHandler:
                 else:
                     e["status"], e["balance"] = "rebuilt", bal
         finally:
-            pool.shutdown(wait=False)
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def _filter_entries(self, entries, groups, names):
         """Apply company/wallet-name filters. Returns (entries, fuzzy, not_found)."""
@@ -907,11 +930,19 @@ class CheckHandler:
 
         base_card["elements"] = header_elements + table_elements
         grand_total = sum(balances.values()) if balances else Decimal("0")
+        # If any wallet has no figure, say so in the headline itself -- the reason sits
+        # far down a long card, and an unmarked total reads as the full day's money.
+        if failed:
+            subtitle = (f"{date_str} · Partial total ({len(failed)} unavailable): "
+                        f"{grand_total:,.2f} USDT")
+            template = "orange"
+        else:
+            subtitle = f"{date_str} · Total: {grand_total:,.2f} USDT"
+            template = "purple" if n_rebuilt else "blue"
         base_card["header"] = {
-            "template": "purple" if n_rebuilt else "blue",
+            "template": template,
             "title": {"tag": "plain_text", "content": "🕰️ Historical Wallet Balance Check"},
-            "subtitle": {"tag": "plain_text",
-                         "content": f"{date_str} · Total: {grand_total:,.2f} USDT"},
+            "subtitle": {"tag": "plain_text", "content": subtitle},
         }
         return base_card
 
@@ -1046,11 +1077,37 @@ class CheckHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": f"🔄 **No daily record was saved for {date_str}, so I'm working the "
-                                   f"balances out from the blockchain for {wallet_count} {wallet_word}.**\n\n"
-                                   "This is slower than reading a saved record — checking every wallet can take "
-                                   "up to about three minutes. Any wallet that can't be worked out in time "
+                        "content": f"🔄 **Some balances for {date_str} aren't saved yet, so I'm "
+                                   f"rebuilding {wallet_count} {wallet_word} from blockchain records.**\n\n"
+                                   "This is slower than reading a saved record — rebuilding can take "
+                                   "up to about four minutes. Any wallet that can't be worked out in time "
                                    "will be listed as \"unavailable\" rather than left out."
+                    }
+                }
+            ]
+        }
+
+    def _create_already_running_card(self) -> dict:
+        """Tell the user their /check was turned away because one is already running."""
+        return {
+            "config": {
+                "wide_screen_mode": True,
+                "enable_forward": False
+            },
+            "header": {
+                "template": "orange",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "⏳ Another Check Is Running"
+                }
+            },
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "A balance check is already running. Please wait for it to "
+                                   "finish and try again — historical checks can take a few minutes."
                     }
                 }
             ]

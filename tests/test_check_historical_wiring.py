@@ -43,7 +43,8 @@ def _handler(monkeysnapshot=None, monkeybalances=None, nearest=None):
             lambda d: (monkeysnapshot, None, {}) if monkeysnapshot
             else ({}, near_date, near_snap))
     if monkeybalances is not None:
-        h.balance_service.get_balance_at = lambda addr, chain, cutoff: monkeybalances.get(addr)
+        h.balance_service.get_balance_at = (
+            lambda addr, chain, cutoff, deadline=None: monkeybalances.get(addr))
     return h
 
 
@@ -136,7 +137,7 @@ def test_reconstruction_timeout_marks_unavailable_not_dropped():
     import time
     h = _handler(monkeysnapshot={})           # no snapshot -> reconstruction path
     h.RECON_TOTAL_BUDGET = 0.3                 # shrink so the slow lookup can't finish
-    def slow(addr, chain, cutoff):
+    def slow(addr, chain, cutoff, deadline=None):
         time.sleep(2)                          # exceeds budget -> task pending -> cancelled
         return Decimal("1.00")
     h.balance_service.get_balance_at = slow
@@ -192,7 +193,7 @@ def test_only_missing_wallets_are_rebuilt_and_saved():
     h.wallet_service.list_wallets = lambda: (True, ROSTER)
     h.sheets_logger.get_snapshot_and_nearest = lambda d: (saved, None, {})
 
-    def fake_rebuild(addr, chain, cutoff):
+    def fake_rebuild(addr, chain, cutoff, deadline=None):
         rebuilt_for.append(addr)
         return Decimal("10.00")
     h.balance_service.get_balance_at = fake_rebuild
@@ -205,6 +206,94 @@ def test_only_missing_wallets_are_rebuilt_and_saved():
     assert saved_rows["date"] == "2026-07-20"
     assert "29.41" in blob                       # 19.41 saved + 10.00 rebuilt
     assert "B123" in blob                        # batch id shown on the card
+
+
+def test_slow_sheets_read_does_not_freeze_the_event_loop():
+    """The bot serves every command and its health check on ONE event loop. The Sheets
+    calls are blocking (and retry with backoff for up to ~30s), so they must run off
+    the loop -- otherwise one slow Sheets call freezes the whole bot."""
+    import time
+    snapshot = {"TAAA": {"wallet_name": "KZP 96G1", "company": "KZP", "address": "TAAA",
+                         "balance": Decimal("10.00"), "batch_id": "b", "time": "t"}}
+
+    def slow_read(date_str):
+        time.sleep(0.4)                        # blocking, like the real Sheets client
+        return (snapshot, None, {})
+
+    h = _handler()
+    h.sheets_logger.get_snapshot_and_nearest = slow_read
+    # keep the test off the network: the one unsaved wallet just reports unavailable
+    h.balance_service.get_balance_at = lambda addr, chain, cutoff, deadline=None: None
+
+    async def scenario():
+        import bot.handlers.check_handler as ch
+        ch._CHECK_EXECUTION_LOCK = False
+        ticks = 0
+        ctx = _FakeCtx(["[2026-07-15]"])
+        task = asyncio.ensure_future(h.handle(ctx))
+        while not task.done():                 # other work the loop must still get to
+            await asyncio.sleep(0.02)
+            ticks += 1
+        await task
+        return ticks
+
+    ticks = asyncio.run(scenario())
+    assert ticks > 5, f"event loop was blocked during the Sheets read (only {ticks} ticks)"
+
+
+def test_rebuild_workers_are_given_the_budget_deadline():
+    """Workers must be told when to stop. Without a deadline they keep issuing provider
+    requests after the command gave up, and the provider request rate is shared
+    process-wide -- which starves the next live /check."""
+    import time
+    seen = []
+    h = _handler(monkeysnapshot={})
+    h.RECON_TOTAL_BUDGET = 12.0
+
+    def record(addr, chain, cutoff, deadline=None):
+        seen.append(deadline)
+        return Decimal("1.00")
+    h.balance_service.get_balance_at = record
+    h.sheets_logger.save_rebuilt_balances = lambda d, r: (True, "B1")
+
+    _run(h, ["[2026-07-15]"])
+    assert seen and all(d is not None for d in seen)      # a deadline was passed
+    started = time.monotonic()
+    for d in seen:
+        assert started < d <= started + h.RECON_TOTAL_BUDGET   # and it is the budget
+
+
+def test_second_check_while_one_is_running_gets_told_so():
+    """The lock can be held for minutes by a rebuild; silence looks like a dead bot."""
+    import bot.handlers.check_handler as ch
+    h = _handler()
+    ctx = _FakeCtx([])
+    ch._CHECK_EXECUTION_LOCK = True
+    try:
+        result = asyncio.run(h.handle(ctx))
+    finally:
+        ch._CHECK_EXECUTION_LOCK = False
+    assert result is False
+    assert ctx.topic_manager.cards, "the blocked user must be told something"
+    blob = _blob(ctx.topic_manager.cards[-1])
+    assert "Another Check Is Running" in blob
+    assert "already running" in blob
+
+
+def test_blocked_check_survives_a_failed_send():
+    """A send failure must not break the guard (or raise into the caller)."""
+    import bot.handlers.check_handler as ch
+    h = _handler()
+    ctx = _FakeCtx([])
+
+    async def boom(card, msg_type=None):
+        raise RuntimeError("Lark is down")
+    ctx.topic_manager.send_command_response = boom
+    ch._CHECK_EXECUTION_LOCK = True
+    try:
+        assert asyncio.run(h.handle(ctx)) is False
+    finally:
+        ch._CHECK_EXECUTION_LOCK = False
 
 
 def test_nothing_saved_when_nothing_was_rebuilt():

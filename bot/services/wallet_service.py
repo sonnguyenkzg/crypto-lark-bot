@@ -13,6 +13,7 @@ from collections import defaultdict
 
 # Import the Tron validator
 from bot.services.tron_validator import TronAddressValidator
+from bot.services.chain_detector import canonical_address
 
 logger = logging.getLogger(__name__)
 
@@ -132,9 +133,12 @@ class WalletService:
                     existing_company = existing_data.get('company', 'Unknown')
                     return False, f"❌ **Wallet name '{name}' already exists in {existing_company}**"
 
-            # 3. Check if address already exists
+            # 3. Check if address already exists.
+            # Compare canonical forms: an ERC20 address is the SAME wallet whatever its
+            # casing, and two entries for one address would double-count its balance.
+            new_address_key = canonical_address(address)
             for existing_key, existing_data in wallets.items():
-                if existing_data.get('address') == address:
+                if canonical_address(existing_data.get('address', '')) == new_address_key:
                     # Handle both old format ('name') and new format ('wallet')
                     existing_name = existing_data.get('wallet', existing_data.get('name', 'Unknown'))
                     existing_company = existing_data.get('company', 'Unknown')

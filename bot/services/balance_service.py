@@ -344,9 +344,15 @@ class BalanceService:
                 net -= amt
         return net
 
-    def _fetch_transfers_after(self, address, chain, cutoff_ms):
+    def _fetch_transfers_after(self, address, chain, cutoff_ms, deadline=None):
         """USDT transfers with block time > cutoff_ms, windowed (cutoff, now].
-        Returns normalized [{from,to,amount(Decimal USDT),success}] or None on error."""
+        Returns normalized [{from,to,amount(Decimal USDT),success}] or None on error.
+
+        `deadline` is a wall-clock (time.monotonic) stop time supplied by the caller
+        (e.g. the rebuild budget). When given it replaces this method's own deadline,
+        so a worker can never keep issuing provider requests after the command that
+        started it has already given up.
+        """
         now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         out = []
         try:
@@ -357,7 +363,8 @@ class BalanceService:
                     headers["TRON-PRO-API-KEY"] = key
                 start = 0
                 pages = 0
-                _deadline = _time.monotonic() + self.TRANSFER_FETCH_DEADLINE
+                _deadline = deadline if deadline is not None else (
+                    _time.monotonic() + self.TRANSFER_FETCH_DEADLINE)
                 while True:
                     if pages >= self.TRANSFER_MAX_PAGES or _time.monotonic() > _deadline:
                         logger.warning(f"TRC20 transfer window too large to reconstruct safely "
@@ -372,7 +379,12 @@ class BalanceService:
                     if r is None:
                         logger.warning(f"TRC20 transfers unavailable after retries for {address[:10]}...")
                         return None
-                    ts = r.json().get("token_transfers", []) or []
+                    payload = r.json()
+                    if not isinstance(payload, dict) or "token_transfers" not in payload:
+                        logger.error(f"Tronscan returned an unexpected body for {address[:10]}...: "
+                                     f"{str(payload)[:120]!r}")
+                        return None
+                    ts = payload.get("token_transfers") or []
                     pages += 1
                     for t in ts:
                         out.append({
@@ -392,7 +404,8 @@ class BalanceService:
                 cutoff_s = cutoff_ms // 1000
                 page = 1
                 pages = 0
-                _deadline = _time.monotonic() + self.TRANSFER_FETCH_DEADLINE
+                _deadline = deadline if deadline is not None else (
+                    _time.monotonic() + self.TRANSFER_FETCH_DEADLINE)
                 while True:
                     if pages >= self.TRANSFER_MAX_PAGES or _time.monotonic() > _deadline:
                         logger.warning(f"ERC20 transfer window too large to reconstruct safely "
@@ -408,9 +421,22 @@ class BalanceService:
                         logger.warning(f"ERC20 transfers unavailable after retries for {address[:10]}...")
                         return None
                     d = r.json()
-                    txs = d.get("result") or []
                     pages += 1
-                    if d.get("status") != "1" or not txs:
+                    status = str(d.get("status", ""))
+                    result = d.get("result")
+                    message = str(d.get("message", ""))
+                    if status == "1" and isinstance(result, list):
+                        txs = result                      # normal page of data
+                    elif status == "0" and isinstance(result, list) and "no transactions found" in message.lower():
+                        txs = []                          # genuinely nothing left
+                    else:
+                        # an error body (rate limit, bad key, window too large) arrives as
+                        # HTTP 200 -- treating it as "no transfers" would silently turn the
+                        # rebuilt figure into today's balance, so fail safe instead.
+                        logger.error(f"Etherscan returned an error body for {address[:10]}...: "
+                                     f"status={status!r} message={message!r} result={str(result)[:80]!r}")
+                        return None
+                    if not txs:
                         break
                     stop = False
                     for t in txs:
@@ -431,16 +457,31 @@ class BalanceService:
             logger.error(f"transfer fetch failed for {address[:10]}... ({chain}): {e}")
             return None
 
-    def get_balance_at(self, address, chain, cutoff_ms):
+    def get_balance_at(self, address, chain, cutoff_ms, deadline=None):
         """Balance at cutoff = current live balance - net transfers after cutoff.
-        Returns Decimal, or None if either fetch fails."""
+        Returns Decimal, or None if either fetch fails.
+
+        `deadline` (time.monotonic seconds) is the caller's wall-clock stop time: past
+        it we stop rather than keep spending the shared provider request budget on a
+        result nobody is waiting for any more.
+        """
         current = self.get_balance(address, chain)
         if current is None:
             return None
-        transfers = self._fetch_transfers_after(address, chain, cutoff_ms)
+        if deadline is not None and _time.monotonic() > deadline:
+            return None
+        transfers = self._fetch_transfers_after(address, chain, cutoff_ms, deadline=deadline)
         if transfers is None:
             return None
-        return current - self._net_from_transfers(transfers, address)
+        result = current - self._net_from_transfers(transfers, address)
+        if result < 0:
+            # A USDT balance cannot be negative, so this means the transfer window was
+            # wrong (over-counted, truncated or overlapping). Fail safe: report no figure
+            # rather than a wrong one -- the wallet is retried on the next check.
+            logger.error(f"Reconstruction produced a negative balance ({result}) for "
+                         f"{address[:10]}... on this date; treating as unavailable")
+            return None
+        return result
 
     def extract_wallet_group(self, wallet_name: str) -> str:
         """Extract group code from wallet name (e.g., 'KZP 96G1' -> 'KZP')."""

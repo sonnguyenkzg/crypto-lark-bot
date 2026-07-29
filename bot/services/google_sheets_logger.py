@@ -138,12 +138,13 @@ class GoogleSheetsBalanceLogger:
         """Append rows, retrying transient Sheets failures (5xx/429/timeout).
 
         A single HTTP 503 here once silently lost a whole day of history, so a
-        transient failure must never be treated as final. Returns the API result,
-        or None if it kept failing.
+        transient failure must never be treated as final. Returns the API result on
+        success. If the last attempt still fails, the underlying error is raised --
+        the caller's try/except turns that into a failure result, so a lost write is
+        always reported, never mistaken for a successful one.
         """
         body = {"values": data_rows, "majorDimension": "ROWS"}
         delay = self.WRITE_RETRY_BACKOFF
-        last_error = None
         for attempt in range(self.WRITE_RETRIES + 1):
             try:
                 return self.sheet.values().append(
@@ -155,21 +156,17 @@ class GoogleSheetsBalanceLogger:
                 ).execute()
             except HttpError as e:
                 status = getattr(getattr(e, "resp", None), "status", None)
-                last_error = e
                 if status not in (429, 500, 502, 503, 504) or attempt >= self.WRITE_RETRIES:
                     raise
                 logger.warning(f"Sheets append failed (HTTP {status}); retrying in "
                                f"{delay:.1f}s ({attempt + 1}/{self.WRITE_RETRIES})")
             except (TimeoutError, OSError) as e:
-                last_error = e
                 if attempt >= self.WRITE_RETRIES:
                     raise
                 logger.warning(f"Sheets append failed ({e}); retrying in "
                                f"{delay:.1f}s ({attempt + 1}/{self.WRITE_RETRIES})")
             time.sleep(delay)
             delay *= 2
-        logger.error(f"Sheets append gave up after {self.WRITE_RETRIES} retries: {last_error}")
-        return None
 
     def save_rebuilt_balances(self, date_str, rows):
         """Write rebuilt balances into the daily record for `date_str`.
