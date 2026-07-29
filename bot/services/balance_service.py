@@ -25,7 +25,7 @@ class BalanceService:
     """Service for checking USDT wallet balances across multiple chains (TRC20, ERC20)."""
 
     TRANSFER_MAX_PAGES = 200          # ~10k TRC20 / ~20k ERC20 transfers; matches Tronscan's 10k cap
-    TRANSFER_FETCH_DEADLINE = 25.0    # seconds; a single wallet's fetch may not exceed this
+    TRANSFER_FETCH_DEADLINE = 120.0   # seconds; a busy wallet can need ~40 pages of history
     RATE_LIMIT_RETRIES = 4            # retries on HTTP 429/5xx before giving up
     RATE_LIMIT_BACKOFF = 1.0          # seconds; doubles per retry (1, 2, 4, 8)
     # Minimum seconds between requests per provider (pacing beats getting throttled).

@@ -27,7 +27,7 @@ _CHECK_EXECUTION_LOCK = False
 
 class CheckHandler:
     RECON_CONCURRENCY = 3          # low: Tronscan rate-limits bursts (HTTP 429)
-    RECON_TOTAL_BUDGET = 150.0    # total lock-hold cap; retries/backoff make wallets slower
+    RECON_TOTAL_BUDGET = 240.0    # total lock-hold cap (only ever used on a gap date)
 
     def __init__(self):
         self.name = "check"
@@ -1117,7 +1117,7 @@ class CheckHandler:
                         "content": f"🔄 **No daily record was saved for {date_str}, so I'm working the "
                                    f"balances out from the blockchain for {wallet_count} {wallet_word}.**\n\n"
                                    "This is slower than reading a saved record — checking every wallet can take "
-                                   "up to about two minutes. Any wallet that can't be worked out in time "
+                                   "up to about three minutes. Any wallet that can't be worked out in time "
                                    "will be listed as \"unavailable\" rather than left out."
                     }
                 }
