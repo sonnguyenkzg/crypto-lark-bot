@@ -104,3 +104,78 @@ def test_write_retries_transient_failure_then_succeeds(monkeypatch):
         {"W": D("1.00")}, {"W": {"company": "C", "address": "TAAA"}}, check_type="scheduled")
     assert ok is True and batch          # data landed instead of being lost
     assert calls["n"] == 3               # proves it retried rather than giving up
+
+
+# --- read-failure vs genuinely-empty (the /check [2026-07-15] duplicate-write bug) ---
+#
+# Root cause: _read_daily_report_rows used to return [] on BOTH a transient read
+# failure AND a genuinely empty sheet, so callers couldn't tell "I don't know what's
+# saved" from "nothing is saved" -- the latter triggered a full rebuild-and-save of
+# every wallet in scope, duplicating rows that were already there. These tests pin
+# the fixed contract: None means "failed to read", a list (maybe empty) means success.
+
+def _logger_with_fake_sheet(monkeypatch, get_execute):
+    """A GoogleSheetsBalanceLogger configured + wired to a fake `sheet.values().get()`."""
+    obj = GoogleSheetsBalanceLogger()
+    obj.credentials_file = "x"
+    obj.spreadsheet_id = "y"
+    monkeypatch.setattr(obj, "_initialize_service", lambda: True)
+
+    class _Get:
+        def execute(self):
+            return get_execute()
+
+    class _Values:
+        def get(self, **kw):
+            return _Get()
+
+    monkeypatch.setattr(obj, "sheet", type("S", (), {"values": lambda self: _Values()})())
+    return obj
+
+
+def test_read_daily_report_rows_returns_none_when_sheets_call_raises(monkeypatch):
+    def boom():
+        raise RuntimeError("transient network blip")
+    obj = _logger_with_fake_sheet(monkeypatch, boom)
+    assert obj._read_daily_report_rows() is None
+
+
+def test_read_daily_report_rows_returns_empty_list_when_sheet_genuinely_empty(monkeypatch):
+    obj = _logger_with_fake_sheet(monkeypatch, lambda: {"values": []})
+    assert obj._read_daily_report_rows() == []
+
+
+def test_read_daily_report_rows_returns_none_when_unconfigured():
+    obj = GoogleSheetsBalanceLogger()
+    obj.credentials_file = None
+    obj.spreadsheet_id = None
+    assert obj._read_daily_report_rows() is None
+
+
+def test_get_snapshot_and_nearest_reports_ok_false_on_read_failure(monkeypatch):
+    obj = GoogleSheetsBalanceLogger()
+    monkeypatch.setattr(obj, "_read_daily_report_rows", lambda: None)
+    snapshot, nearest_date, nearest_snapshot, ok = obj.get_snapshot_and_nearest("2026-07-15")
+    assert ok is False
+    assert snapshot == {}
+    assert nearest_date is None
+    assert nearest_snapshot == {}
+
+
+def test_get_snapshot_and_nearest_reports_ok_true_on_success_with_exact_match(monkeypatch):
+    rows = [row("20260715000112", "00:01:12", "A", "TAAA", "10.00")]
+    obj = GoogleSheetsBalanceLogger()
+    monkeypatch.setattr(obj, "_read_daily_report_rows", lambda: rows)
+    snapshot, nearest_date, nearest_snapshot, ok = obj.get_snapshot_and_nearest("2026-07-15")
+    assert ok is True
+    assert snapshot["TAAA"]["balance"] == Decimal("10.00")
+
+
+def test_get_snapshot_and_nearest_reports_ok_true_on_genuinely_empty_sheet(monkeypatch):
+    obj = GoogleSheetsBalanceLogger()
+    monkeypatch.setattr(obj, "_read_daily_report_rows", lambda: [])
+    snapshot, nearest_date, nearest_snapshot, ok = obj.get_snapshot_and_nearest("2026-07-15")
+    assert ok is True
+    assert snapshot == {}
+    assert nearest_date is None
+    assert nearest_snapshot == {}

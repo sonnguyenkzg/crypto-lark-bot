@@ -40,8 +40,8 @@ def _handler(monkeysnapshot=None, monkeybalances=None, nearest=None):
         near_date, near_snap = nearest if nearest else (None, {})
         h.sheets_logger.get_snapshot_for_date = lambda d: monkeysnapshot
         h.sheets_logger.get_snapshot_and_nearest = (
-            lambda d: (monkeysnapshot, None, {}) if monkeysnapshot
-            else ({}, near_date, near_snap))
+            lambda d: (monkeysnapshot, None, {}, True) if monkeysnapshot
+            else ({}, near_date, near_snap, True))
     if monkeybalances is not None:
         h.balance_service.get_balance_at = (
             lambda addr, chain, cutoff, deadline=None: monkeybalances.get(addr))
@@ -191,7 +191,7 @@ def test_only_missing_wallets_are_rebuilt_and_saved():
     rebuilt_for, saved_rows = [], {}
     h = CheckHandler()
     h.wallet_service.list_wallets = lambda: (True, ROSTER)
-    h.sheets_logger.get_snapshot_and_nearest = lambda d: (saved, None, {})
+    h.sheets_logger.get_snapshot_and_nearest = lambda d: (saved, None, {}, True)
 
     def fake_rebuild(addr, chain, cutoff, deadline=None):
         rebuilt_for.append(addr)
@@ -218,7 +218,7 @@ def test_slow_sheets_read_does_not_freeze_the_event_loop():
 
     def slow_read(date_str):
         time.sleep(0.4)                        # blocking, like the real Sheets client
-        return (snapshot, None, {})
+        return (snapshot, None, {}, True)
 
     h = _handler()
     h.sheets_logger.get_snapshot_and_nearest = slow_read
@@ -296,6 +296,43 @@ def test_blocked_check_survives_a_failed_send():
         ch._CHECK_EXECUTION_LOCK = False
 
 
+def test_read_failure_sends_unavailable_card_and_triggers_zero_writes():
+    """The bug this whole fix targets: /check [2026-07-15] on a date that was ALREADY
+    fully saved rebuilt every wallet from the blockchain and wrote duplicate rows,
+    because a read failure (ok=False) was silently treated as "nothing is saved".
+
+    With the fix, get_snapshot_and_nearest reporting ok=False must make the handler
+    stop immediately: no classification, no rebuild, no save. Both get_balance_at
+    (rebuild) and save_rebuilt_balances (write) are spied and must NEVER be called.
+    """
+    balance_calls = []
+    save_calls = []
+    h = CheckHandler()
+    h.wallet_service.list_wallets = lambda: (True, ROSTER)
+    h.sheets_logger.get_snapshot_and_nearest = lambda d: ({}, None, {}, False)  # read failed
+
+    def spy_get_balance_at(addr, chain, cutoff, deadline=None):
+        balance_calls.append(addr)
+        return Decimal("999.00")  # would prove a rebuild happened, if ever called
+
+    def spy_save_rebuilt_balances(date_str, rows):
+        save_calls.append((date_str, rows))
+        return True, "SHOULD-NEVER-HAPPEN"
+
+    h.balance_service.get_balance_at = spy_get_balance_at
+    h.sheets_logger.save_rebuilt_balances = spy_save_rebuilt_balances
+
+    cards = _run(h, ["[2026-07-15]"])
+
+    assert cards, "expected at least one card"
+    blob = _blob(cards[-1])
+    assert "Couldn't Read Saved Balances" in blob
+    assert "2026-07-15" in blob
+
+    assert balance_calls == [], f"rebuild must never run on a read failure, got {balance_calls}"
+    assert save_calls == [], f"save must never run on a read failure, got {save_calls}"
+
+
 def test_nothing_saved_when_nothing_was_rebuilt():
     saved = {"TAAA": {"wallet_name": "KZP 96G1", "company": "KZP", "address": "TAAA",
                       "balance": Decimal("19.41"), "batch_id": "b", "time": "t"},
@@ -306,7 +343,7 @@ def test_nothing_saved_when_nothing_was_rebuilt():
     calls = []
     h = CheckHandler()
     h.wallet_service.list_wallets = lambda: (True, ROSTER)
-    h.sheets_logger.get_snapshot_and_nearest = lambda d: (saved, None, {})
+    h.sheets_logger.get_snapshot_and_nearest = lambda d: (saved, None, {}, True)
     h.sheets_logger.save_rebuilt_balances = lambda d, r: calls.append(r) or (True, "X")
     blob = _blob(_run(h, ["[2026-07-20]"])[-1])
     assert calls == []                           # nothing to save -> no write

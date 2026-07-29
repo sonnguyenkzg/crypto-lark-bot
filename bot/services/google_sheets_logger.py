@@ -289,19 +289,29 @@ class GoogleSheetsBalanceLogger:
         return snap
 
     def get_snapshot_and_nearest(self, date_str):
-        """Return (snapshot_for_date, nearest_date, nearest_snapshot) in ONE sheet read.
+        """Return (snapshot_for_date, nearest_date, nearest_snapshot, ok) in ONE sheet read.
 
-        If date_str has no saved record, nearest_date/nearest_snapshot describe the closest
-        date that does, so a caller can always show a number for every wallet instead of
-        leaving it blank. Ties prefer the earlier date (a balance already established).
+        `ok` is False whenever the underlying read failed -- unconfigured credentials,
+        service init failure, or an exception from the Sheets API -- in which case the
+        first three values are ({}, None, {}). CRITICAL: a caller MUST treat ok=False as
+        "I don't know what's saved", never as "nothing is saved". Confusing the two is
+        exactly the bug that caused /check [2026-07-15] to rebuild and duplicate 68
+        already-saved wallets after a transient read failure returned an empty result.
+
+        When ok is True and date_str has no saved record, nearest_date/nearest_snapshot
+        describe the closest date that does, so a caller can always show a number for
+        every wallet instead of leaving it blank. Ties prefer the earlier date (a
+        balance already established).
         """
         rows = self._read_daily_report_rows()
+        if rows is None:
+            return {}, None, {}, False
         exact = self._build_snapshot_from_rows(rows, date_str)
         if exact:
-            return exact, None, {}
+            return exact, None, {}, True
         dates = sorted({r[1] for r in rows if len(r) > 1 and r[1]})
         if not dates:
-            return {}, None, {}
+            return {}, None, {}, True
         from datetime import date as _date
 
         def _parse(d):
@@ -312,28 +322,34 @@ class GoogleSheetsBalanceLogger:
 
         target = _parse(date_str)
         if target is None:
-            return {}, None, {}
+            return {}, None, {}, True
         candidates = [(d, _parse(d)) for d in dates]
         candidates = [(d, p) for d, p in candidates if p is not None]
         if not candidates:
-            return {}, None, {}
+            return {}, None, {}, True
         nearest = min(candidates, key=lambda dp: (abs((dp[1] - target).days), dp[1] > target))[0]
-        return {}, nearest, self._build_snapshot_from_rows(rows, nearest)
+        return {}, nearest, self._build_snapshot_from_rows(rows, nearest), True
 
     def _read_daily_report_rows(self):
-        """Read DAILY_REPORT data rows (no header). Returns [] on any failure."""
+        """Read DAILY_REPORT data rows (no header).
+
+        Returns None on ANY failure -- unconfigured credentials, service init failure,
+        or an exception raised by the Sheets API call -- so a failed read can never be
+        confused with a sheet that genuinely has no rows for the date. Returns a list
+        (possibly empty, when the sheet truly holds nothing) on success.
+        """
         if not self.credentials_file or not self.spreadsheet_id:
-            return []
+            return None
         try:
             if not self._initialize_service():
-                return []
+                return None
             res = self.sheet.values().get(
                 spreadsheetId=self.spreadsheet_id, range="DAILY_REPORT!A:H").execute()
             rows = res.get("values", [])
             return rows[1:] if rows else []
         except Exception as e:
             logger.error(f"Failed to read DAILY_REPORT: {e}")
-            return []
+            return None
 
     def get_snapshot_for_date(self, date_str):
         """Read DAILY_REPORT and return the assembled snapshot for date_str."""

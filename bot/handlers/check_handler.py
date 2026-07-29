@@ -356,8 +356,17 @@ class CheckHandler:
 
         # Off the event loop: reading the sheet blocks (and retries), and the bot serves
         # every other command plus its health check on this single loop.
-        snapshot, _nearest_date, _nearest_snapshot = \
+        snapshot, _nearest_date, _nearest_snapshot, ok = \
             await asyncio.to_thread(self.sheets_logger.get_snapshot_and_nearest, date_str)
+
+        # CRITICAL: a failed read must NEVER be treated as "nothing is saved for this
+        # date". That confusion is exactly what caused /check [2026-07-15] to rebuild and
+        # duplicate 68 already-saved wallets after a transient Sheets error. If we can't
+        # read the record, stop here -- no classifying, no rebuilding, no saving.
+        if not ok:
+            await context.topic_manager.send_command_response(
+                self._create_sheet_unavailable_card(date_str), msg_type="interactive")
+            return False
 
         roster = [{"wallet": i["wallet"], "company": i["company"], "address": i["address"],
                    "chain": i.get("chain", "TRC20"), "created_at": i.get("created_at")}
@@ -376,6 +385,13 @@ class CheckHandler:
 
         todo = [e for e in entries if e["status"] == "needs_rebuild"]
         if todo:
+            if len(todo) == len(entries):
+                # Legitimate gap-date case (e.g. a date the bot never ran for) still must
+                # be allowed to rebuild everything -- this is NOT the bug being guarded
+                # against above (that was an empty snapshot caused by a READ FAILURE, now
+                # blocked by the `ok` check). Just make it visible in the logs.
+                logger.info(f"Rebuilding ALL {len(todo)} wallets in scope for {date_str} "
+                            "(no saved balances found)")
             await context.topic_manager.send_command_response(
                 self._create_rebuilding_card(date_str, len(todo)), msg_type="interactive")
             cutoff_ms = int(datetime.strptime(date_str + " 00:01:00", "%Y-%m-%d %H:%M:%S")
@@ -945,6 +961,18 @@ class CheckHandler:
             "subtitle": {"tag": "plain_text", "content": subtitle},
         }
         return base_card
+
+    def _create_sheet_unavailable_card(self, date_str: str) -> dict:
+        """Saved balances couldn't be read -- never rebuild in this state."""
+        return {
+            "config": {"wide_screen_mode": True, "enable_forward": False},
+            "header": {"template": "red",
+                       "title": {"tag": "plain_text", "content": "❌ Couldn't Read Saved Balances"}},
+            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content":
+                f"I couldn't read the saved balances for **{date_str}** just now, so I've stopped "
+                "rather than risk rebuilding figures that are already recorded.\n\n"
+                "This is usually temporary — please try again in a minute."}}],
+        }
 
     def _create_bad_date_card(self, date_str: str) -> dict:
         """Create invalid-date error card for `/check [date]`."""
