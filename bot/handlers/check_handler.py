@@ -903,7 +903,11 @@ class CheckHandler:
         # Exception lines lead with the wallet name, not the reason.
         lines = []
         if filtered:
-            lines.append(f"📊 **Wallets in scope: {len(counted)} of {roster_total} "
+            # "in scope" is how many wallets the filter selected -- NOT how many ended up
+            # with a figure. Those are different numbers whenever a selected wallet was
+            # added after the date, and labelling the second as the first read as a
+            # contradiction against the acknowledgement card.
+            lines.append(f"📊 **Wallets in scope: {len(entries)} of {roster_total} "
                          f"monitored** · {date_str}")
         else:
             lines.append(f"📊 **Total wallets in monitoring: {roster_total}** · {date_str}")
