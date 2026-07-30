@@ -908,9 +908,9 @@ class CheckHandler:
             # added after the date, and labelling the second as the first read as a
             # contradiction against the acknowledgement card.
             lines.append(f"📊 **Wallets in scope: {len(entries)} of {roster_total} "
-                         f"monitored** · {date_str}")
+                         f"monitored**")
         else:
-            lines.append(f"📊 **Total wallets in monitoring: {roster_total}** · {date_str}")
+            lines.append(f"📊 **Total wallets in monitoring: {roster_total}**")
         if n_saved:
             lines.append(f"• **{n_saved}** have a balance recorded for this date")
         if n_rebuilt:

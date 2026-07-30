@@ -43,7 +43,9 @@ def test_summary_opens_with_the_monitoring_total():
     ]
     b = blob(H._create_historical_card(entries, "2026-07-15", {}, [], None,
                                        roster_total=len(entries)))
-    assert "**Total wallets in monitoring: 3** " in b and "2026-07-15" in b
+    # the date is NOT repeated here -- the card header already carries it
+    assert "**Total wallets in monitoring: 3**" in b
+    assert "2026-07-15" in b            # present in the header/subtitle, not the summary line
 
 def test_saved_batch_shown_only_when_something_saved():
     assert "B1" in blob(H._create_historical_card(ENTRIES, "2026-07-15", {}, [], "B1"))
