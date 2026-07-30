@@ -410,7 +410,8 @@ class CheckHandler:
                      "address": e["address"], "balance": e["balance"]} for e in fresh])
             saved_batch = batch if ok else None
 
-        card = self._create_historical_card(entries, date_str, fuzzy, not_found, saved_batch)
+        card = self._create_historical_card(entries, date_str, fuzzy, not_found, saved_batch,
+                                           roster_total=len(roster), filtered=bool(groups or names))
 
         await context.topic_manager.send_command_response(card, msg_type="interactive")
         return True
@@ -873,7 +874,8 @@ class CheckHandler:
             "elements": elements
         }
 
-    def _create_historical_card(self, entries, date_str, fuzzy, not_found, saved_batch):
+    def _create_historical_card(self, entries, date_str, fuzzy, not_found, saved_batch,
+                                roster_total=None, filtered=False):
         """Balance table for a past date, plus a plain account of where each figure came from."""
         counted = [e for e in entries if e["balance"] is not None]
         rows = [{"name": e["name"], "company": e["company"], "address": e["address"],
@@ -898,35 +900,42 @@ class CheckHandler:
 
         n_saved = sum(1 for e in counted if e["status"] == "saved")
         n_rebuilt = sum(1 for e in counted if e["status"] == "rebuilt")
-        n_removed = sum(1 for e in counted if e["status"] == "removed_but_saved")
-        parts = []
-        if n_saved:
-            parts.append(f"{n_saved} saved")
-        if n_rebuilt:
-            parts.append(f"{n_rebuilt} rebuilt")
-        if n_removed:
-            parts.append(f"{n_removed} no longer in your list")
-        summary = (f"📊 **{len(counted)} {'wallet' if len(counted) == 1 else 'wallets'} counted**"
-                   + (" — " + ", ".join(parts) if parts else ""))
-
-        header_elements = [{"tag": "div", "text": {"tag": "lark_md", "content": summary}}]
-
-        later = [e["name"] for e in entries if e["status"] == "not_yet_created"]
-        if later:
-            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
-                f"➕ **{len(later)} more were added after this date**, so they have no balance "
-                f"yet: {', '.join(later)}"}})
-
-        failed = [e["name"] for e in entries if e["status"] == "failed"]
-        if failed:
-            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
-                f"🚫 **could not be worked out** (not counted): {', '.join(failed)}"}})
-
         removed = [e["name"] for e in counted if e["status"] == "removed_but_saved"]
+        later = [e["name"] for e in entries if e["status"] == "not_yet_created"]
+        failed = [e["name"] for e in entries if e["status"] == "failed"]
+
+        def names(ns):
+            return ", ".join(f"`{n}`" for n in ns)
+
+        # Start from how many wallets the list holds TODAY and account for every one of
+        # them, so the counted figure is never a number the reader has to reverse-engineer.
+        # Exception lines lead with the wallet name, not the reason.
+        lines = []
+        if filtered:
+            lines.append(f"📊 Showing **{len(counted)} of your {roster_total} wallets** "
+                         f"(you filtered this check).")
+        else:
+            lines.append(f"📊 **Your list has {roster_total} wallets today.** For {date_str}:")
+        if n_saved:
+            lines.append(f"• **{n_saved}** have a balance saved that day")
+        if n_rebuilt:
+            lines.append(f"• **{n_rebuilt}** were worked out from blockchain records")
+        if later:
+            lines.append(f"• {names(later)} — added after this date, so no balance yet")
         if removed:
-            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
-                f"📌 **No longer in your list** but held a balance that day, so still "
-                f"counted: {', '.join(removed)}"}})
+            lines.append(f"• {names(removed)} — held a balance that day but "
+                         f"{'is' if len(removed) == 1 else 'are'} no longer in your list "
+                         f"(still counted)")
+        if failed:
+            lines.append(f"• {names(failed)} — could not be worked out, so not counted")
+        lines.append(f"➡️ **{len(counted)} {'wallet' if len(counted) == 1 else 'wallets'} "
+                     f"counted** in the total below")
+
+        header_elements = [{"tag": "div",
+                            "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
+
+        # (added-later / removed / could-not-work-out are itemised in the summary above,
+        # so they are not repeated as separate notes here.)
 
         for want, matches in (fuzzy or {}).items():
             header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
