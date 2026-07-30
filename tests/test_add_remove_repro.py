@@ -72,3 +72,38 @@ def test_find_by_unknown_address_reports_not_found_end_to_end():
     h = _handler_with(WALLETS)
     found, msg = h.find_wallet_by_identifier("0x0000000000000000000000000000000000000000")
     assert found is False and "not found" in str(msg).lower()
+
+
+def test_removed_by_address_reports_the_real_chain_not_trc20():
+    """An ERC20 wallet removed BY ADDRESS must be labelled ERC20.
+
+    The address-lookup path used to drop the `chain` field, so the success card's
+    `.get('chain', 'TRC20')` fallback mislabelled every ERC20 removal as TRC20.
+    """
+    h = _handler_with(WALLETS)
+    found, info = h.find_wallet_by_identifier(BUG_ADDRESS)
+    assert found is True
+    assert info.get("chain") == "ERC20", f"chain was {info.get('chain')!r}"
+
+
+def test_success_card_shows_erc20_for_an_erc20_address():
+    import json
+    h = RemoveHandler()
+    card = h._create_success_card(
+        "Cold test", {"company": "test", "address": BUG_ADDRESS, "chain": "ERC20"},
+        BUG_ADDRESS)
+    blob = json.dumps(card)
+    assert "ERC20" in blob
+    assert "TRC20" not in blob
+
+
+def test_success_card_derives_chain_when_record_has_none():
+    """Even if the stored record predates the chain field, the card must not guess TRC20
+    for an address that is clearly ERC20."""
+    import json
+    h = RemoveHandler()
+    card = h._create_success_card(
+        "Cold test", {"company": "test", "address": BUG_ADDRESS}, BUG_ADDRESS)
+    blob = json.dumps(card)
+    assert "ERC20" in blob
+    assert "TRC20" not in blob

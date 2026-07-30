@@ -75,11 +75,15 @@ class RemoveHandler:
                     flat = []
                     for company_name, company_wallets in wallet_data['companies'].items():
                         for w in company_wallets:
-                            flat.append({"name": w["name"], "address": w["address"], "company": company_name})
+                            flat.append({"name": w["name"], "address": w["address"],
+                                         "company": company_name,
+                                         "chain": w.get("chain")})
                     hit = self._match_address(identifier, flat)
                     if hit:
                         return True, {"name": hit["name"], "wallet": hit["name"],
-                                      "address": hit["address"], "company": hit["company"]}
+                                      "address": hit["address"], "company": hit["company"],
+                                      "chain": hit.get("chain")
+                                               or detect_chain_from_address(hit["address"])}
 
                 # Valid address but not found in our wallets
                 return False, f"❌ Address '{identifier[:10]}...{identifier[-6:]}' not found in wallet list"
@@ -163,7 +167,11 @@ class RemoveHandler:
         """Create success card with information about what was removed."""
         company = wallet_info.get('company', 'Unknown')
         wallet_address = wallet_info.get('address', 'Unknown')
-        chain = wallet_info.get('chain', 'TRC20')  # Default to TRC20 for backward compatibility
+        # Derive the chain from the address when the stored record doesn't carry one.
+        # A blind 'TRC20' default mislabelled every ERC20 wallet removed by address.
+        chain = (wallet_info.get('chain')
+                 or detect_chain_from_address(wallet_address)
+                 or 'TRC20')
         chain_emoji = get_chain_emoji(chain)
 
         # Show what identifier was used
