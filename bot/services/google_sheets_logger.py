@@ -264,7 +264,26 @@ class GoogleSheetsBalanceLogger:
 
     def _build_snapshot_from_rows(self, rows, date_str):
         """Union of all that-date batches, keyed by canonical_address, keeping the
-        EARLIEST batch value per address (a later intraday run only adds wallets)."""
+        EARLIEST batch value per address (a later intraday run only adds wallets).
+
+        DO NOT "fix" this to take the latest batch. Reviewed and confirmed 2026-07-30
+        against the live vault; two reasons it must stay earliest:
+
+        1. A row dated D means the balance at ~00:01 GMT+7 on day D -- the opening
+           figure. The daily report runs at 00:00 GMT+7 and stamps that day's date, and
+           get_balance_at() reconstructs a missing date at exactly `D 00:01:00 GMT+7`.
+           Taking the latest batch would label a mid-afternoon figure as day D, so saved
+           dates and rebuilt dates would no longer describe the same instant. Real
+           example: 2026-01-27 KZO TH OPS TRC 1 holds 1,472,481.02 at 00:00:31 and
+           363,735.79 at 13:45:13. Only 4 of 309 dates have same-date duplicates at all,
+           but the choice moves 2026-01-27's total by +223,574.35.
+
+        2. batch_id is stamped when a row is WRITTEN, not with the time-of-day on the
+           date it describes. Rebuilt rows therefore carry a later batch_id than the
+           scheduled measurement they sit beside -- e.g. all 70 rebuilt rows for
+           2026-07-20 carry batch ids 202607291720xx / 202607301426xx. "Latest batch"
+           would let a reconstruction silently override a genuinely measured snapshot.
+        """
         snap = {}
         for r in rows:
             # cols: 0 batch,1 date,2 time,3 wallet,4 company,5 address,6 balance,7 type
