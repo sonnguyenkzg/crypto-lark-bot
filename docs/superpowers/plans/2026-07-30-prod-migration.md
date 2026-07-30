@@ -250,12 +250,17 @@ Expected: `lark_bot.py` and `main.py` both running, ngrok running, and `{"status
 SCRATCH=/tmp/claude-1000/-home-son-workspaces-kzg/a3a4f4b2-c18c-405d-a097-8265004f9d1c/scratchpad
 ssh -i "$SCRATCH/k.pem" ubuntu@47.129.129.241 '
 cd /home/ubuntu/crypto-lark-bot
-PID=$(pgrep -f "python lark_bot.py" | head -1)
-BOT=$(ps -o lstart= -p $PID | xargs -I{} date -d "{}" +%s)
 CM=$(git log -1 --format=%ct)
-echo "bot started : $(ps -o lstart= -p $PID)"
 echo "commit made : $(git log -1 --format=%cd)"
-[ "$BOT" -gt "$CM" ] && echo ">>> bot is running the NEW code" || echo ">>> STALE PROCESS - restart again"
+for name in lark_bot.py main.py wallets_to_gg_sheet.py cleanup.py; do
+  # match the python interpreter itself, not the wrapper shell that also carries the script name
+  for PID in $(pgrep -f "python.*$name"); do
+    [ "$(tr -d "\0" < /proc/$PID/comm 2>/dev/null)" = "python" ] || continue
+    ST=$(date -d "$(ps -o lstart= -p $PID)" +%s)
+    if [ "$ST" -gt "$CM" ]; then echo "  NEW  $name (pid $PID, started $(ps -o lstart= -p $PID))"
+    else echo "  STALE $name (pid $PID) — restart again"; fi
+  done
+done
 '
 ```
 Expected: `>>> bot is running the NEW code`. A Python process does not hot-reload, so this check is what proves the deploy took effect.
