@@ -41,10 +41,27 @@ Note the PIDs. If nothing matches, dev is already down — record that and skip 
 
 - [ ] **Step 2: Stop the dev bot and dev tunnel**
 
+Do **not** use `pkill -f "lark_bot.py"`. The pattern matches the invoking shell's own command line, so `pkill` kills that shell before it reports, returning a misleading exit code while leaving ngrok alive. Kill by PID instead, and trust only the `pgrep` re-check in Step 3 — never the exit code:
+
 ```bash
-pkill -f "lark_bot.py"
-pkill -f "bin/ngrok http 8080"
-sleep 2
+ME=$$
+for pat in "python lark_bot.py" "ngrok http 8080"; do
+  for p in $(pgrep -f "$pat"); do
+    [ "$p" = "$ME" ] || [ "$p" = "$PPID" ] && continue
+    cmd=$(ps -o args= -p "$p" 2>/dev/null | cut -c1-60)
+    case "$cmd" in *pgrep*|*"for pat in"*) continue;; esac
+    kill "$p" 2>/dev/null && echo "killed pid $p -> $cmd"
+  done
+done
+```
+
+Uvicorn shuts down gracefully and can take a few seconds. Wait for the process to actually exit rather than assuming, and escalate to `kill -9` only if it outlives the wait:
+
+```bash
+for p in $(pgrep -f "python lark_bot.py"); do
+  timeout 45 tail --pid=$p -f /dev/null 2>/dev/null
+  kill -0 $p 2>/dev/null && kill -9 $p
+done
 ```
 
 - [ ] **Step 3: Verify dev is silent**
