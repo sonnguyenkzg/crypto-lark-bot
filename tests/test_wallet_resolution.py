@@ -38,11 +38,24 @@ def test_wallet_created_before_the_date_is_expected():
     rows = H.classify_wallets(ROSTER, {}, "2026-07-25")     # after New Wallet was added
     assert by_name(rows)["New Wallet"]["status"] == "needs_rebuild"
 
-def test_removed_wallet_with_a_balance_is_kept():
-    # 'Cold wallet' is in the saved record but no longer in wallets.json
+def test_wallet_not_in_wallets_json_is_ignored():
+    # 'Cold wallet' is in the saved record but no longer in wallets.json -- scope is
+    # wallets.json only, so it must not appear in the output at all. Also check every
+    # roster wallet IS still present (by name and by address) -- not just that the
+    # count matches, which a bug that drops a real wallet while keeping a ghost one
+    # could satisfy by coincidence.
     s = snap(("TAAA", "KZP 96G1", "KZP", "19.41"), ("TOLD", "Cold wallet", "S5", "1250.00"))
-    r = by_name(H.classify_wallets(ROSTER, s, "2026-07-15"))["Cold wallet"]
-    assert r["status"] == "removed_but_saved" and r["balance"] == Decimal("1250.00")
+    rows = H.classify_wallets(ROSTER, s, "2026-07-15")
+    assert len(rows) == len(ROSTER)
+    assert {r["name"] for r in rows} == {w["wallet"] for w in ROSTER}
+    assert {r["address"] for r in rows} == {w["address"] for w in ROSTER}
+
+def test_entry_count_always_equals_wallets_json_count():
+    """The report must always reconcile to the wallet list -- never more, never fewer."""
+    s = snap(("TAAA", "KZP 96G1", "KZP", "19.41"), ("TGHOST", "Retired Wallet", "S5", "999.00"))
+    rows = H.classify_wallets(ROSTER, s, "2026-07-15")
+    assert len(rows) == len(ROSTER)
+    assert "Retired Wallet" not in {r["name"] for r in rows}
 
 def test_unparseable_created_at_is_treated_as_existing():
     roster = [{"wallet": "Odd", "company": "KZP", "address": "TODD", "chain": "TRC20",
@@ -54,8 +67,3 @@ def test_erc20_address_case_is_ignored():
     r = by_name(H.classify_wallets(ROSTER, s, "2026-07-15"))["KZO ERC A 1"]
     assert r["status"] == "saved"          # matched despite roster having 0xABC
 
-def test_removed_erc20_wallet_keeps_its_real_chain():
-    s = snap(("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "Removed Eth", "KZO", "500.00"))
-    row = by_name(H.classify_wallets(ROSTER, s, "2026-07-15"))["Removed Eth"]
-    assert row["status"] == "removed_but_saved"
-    assert row["chain"] == "ERC20"        # not the hardcoded TRC20

@@ -296,20 +296,18 @@ class CheckHandler:
     def classify_wallets(self, roster, snapshot, date_str):
         """Decide, per wallet, what we can show for `date_str`. Pure - no network.
 
-        wallets.json is the source of truth for which wallets exist, but a wallet
-        that was removed since can still hold a real balance on a past date, so it
-        is kept (otherwise that day's total would silently shrink).
+        SCOPE: the wallets currently in wallets.json, and only those. A wallet that
+        has since been removed from monitoring is ignored even if the daily record
+        still holds a figure for it that day -- reporting is about the wallets under
+        monitoring now, so the count always reconciles to wallets.json.
 
-        status: saved              - a figure was recorded that day
-                removed_but_saved  - as above, but no longer in wallets.json
-                needs_rebuild      - existed then, no figure recorded -> work it out
-                not_yet_created    - added after this date, so it has no balance
+        status: saved            - a figure was recorded that day
+                needs_rebuild    - existed then, no figure recorded -> work it out
+                not_yet_created  - added after this date, so it has no balance
         """
         out = []
-        seen = set()
         for w in roster:
             key = canonical_address(w.get("address", ""))
-            seen.add(key)
             entry = snapshot.get(key)
             if entry:
                 status, balance = "saved", entry["balance"]
@@ -321,13 +319,6 @@ class CheckHandler:
                         "address": w.get("address", ""), "chain": w.get("chain", "TRC20"),
                         "status": status, "balance": balance})
 
-        # figures recorded that day for wallets that are no longer on the list
-        for key, entry in snapshot.items():
-            if key in seen:
-                continue
-            out.append({"name": entry["wallet_name"], "company": entry.get("company", "Unknown"),
-                        "address": entry.get("address", ""), "chain": detect_chain_from_address(entry.get("address", "")) or "TRC20",
-                        "status": "removed_but_saved", "balance": entry["balance"]})
         return out
 
     async def _handle_historical(self, context: Any, date_str: str, other_tokens: List[str],
@@ -380,7 +371,8 @@ class CheckHandler:
         # should never be left staring at silence. Sent AFTER filters are resolved so it
         # can report the match count, echoing back what was understood.
         await context.topic_manager.send_command_response(
-            self._create_historical_checking_card(date_str, groups, names, len(entries)),
+            self._create_historical_checking_card(date_str, groups, names, len(entries),
+                                                  roster_total=len(roster)),
             msg_type="interactive")
 
         todo = [e for e in entries if e["status"] == "needs_rebuild"]
@@ -900,34 +892,29 @@ class CheckHandler:
 
         n_saved = sum(1 for e in counted if e["status"] == "saved")
         n_rebuilt = sum(1 for e in counted if e["status"] == "rebuilt")
-        removed = [e["name"] for e in counted if e["status"] == "removed_but_saved"]
         later = [e["name"] for e in entries if e["status"] == "not_yet_created"]
         failed = [e["name"] for e in entries if e["status"] == "failed"]
 
         def names(ns):
-            return ", ".join(f"`{n}`" for n in ns)
+            return ", ".join(f"**{n}**" for n in ns)
 
-        # Start from how many wallets the list holds TODAY and account for every one of
-        # them, so the counted figure is never a number the reader has to reverse-engineer.
+        # Start from the number of wallets under monitoring and account for every one of
+        # them, so the counted figure is never a number the reader has to work backwards to.
         # Exception lines lead with the wallet name, not the reason.
         lines = []
         if filtered:
-            lines.append(f"📊 Showing **{len(counted)} of your {roster_total} wallets** "
-                         f"(you filtered this check).")
+            lines.append(f"📊 **Wallets in scope: {len(counted)} of {roster_total} "
+                         f"monitored** · {date_str}")
         else:
-            lines.append(f"📊 **Your list has {roster_total} wallets today.** For {date_str}:")
+            lines.append(f"📊 **Total wallets in monitoring: {roster_total}** · {date_str}")
         if n_saved:
-            lines.append(f"• **{n_saved}** have a balance saved that day")
+            lines.append(f"• **{n_saved}** have a balance recorded for this date")
         if n_rebuilt:
-            lines.append(f"• **{n_rebuilt}** were worked out from blockchain records")
+            lines.append(f"• **{n_rebuilt}** were calculated from blockchain records")
         if later:
             lines.append(f"• {names(later)} — added after this date, so no balance yet")
-        if removed:
-            lines.append(f"• {names(removed)} — held a balance that day but "
-                         f"{'is' if len(removed) == 1 else 'are'} no longer in your list "
-                         f"(still counted)")
         if failed:
-            lines.append(f"• {names(failed)} — could not be worked out, so not counted")
+            lines.append(f"• {names(failed)} — could not be calculated, so not counted")
         lines.append(f"➡️ **{len(counted)} {'wallet' if len(counted) == 1 else 'wallets'} "
                      f"counted** in the total below")
 
@@ -1076,16 +1063,25 @@ class CheckHandler:
             ]
         }
 
-    def _create_historical_checking_card(self, date_str, groups=None, names=None, matched=None) -> dict:
-        """Confirm what the bot understood, before any waiting begins."""
+    def _create_historical_checking_card(self, date_str, groups=None, names=None, matched=None,
+                                         roster_total=None) -> dict:
+        """Confirm what the bot understood, before any waiting begins.
+
+        States the number of wallets under monitoring rather than an internal "matched"
+        count, so the figure always reconciles to the wallet list.
+        """
         lines = [f"📅 **Date:** {date_str}"]
         if groups:
             lines.append(f"🏢 **Company:** {', '.join(groups)}")
         if names:
-            lines.append(f"👛 **Wallets:** {', '.join(names)}")
+            lines.append(f"👛 **Wallets requested:** {', '.join(f'**{n}**' for n in names)}")
         if matched is not None:
-            lines.append(f"🔎 **Matched {matched} {'wallet' if matched == 1 else 'wallets'}**")
-        lines.append("\nReading saved balances; anything missing will be rebuilt.")
+            if groups or names:
+                lines.append(f"📊 **Wallets in scope: {matched}"
+                             + (f" of {roster_total} monitored" if roster_total else "") + "**")
+            else:
+                lines.append(f"📊 **Total wallets in monitoring: {matched}**")
+        lines.append("\nReading recorded balances; anything not yet recorded will be calculated.")
         return {
             "config": {"wide_screen_mode": True, "enable_forward": False},
             "header": {"template": "blue",

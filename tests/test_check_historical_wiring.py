@@ -165,7 +165,7 @@ def test_unrebuildable_wallet_reported_failed_not_borrowed_from_nearest():
                  nearest=("2026-07-19", nearest_snap))
     blob = _blob(_run(h, ["[2026-07-20]"])[-1])
     assert "KZP 96G1" in blob                    # present, not silently dropped
-    assert "could not be worked out" in blob     # honestly reported as failed
+    assert "could not be calculated" in blob     # honestly reported as failed
     assert "10.00" in blob                       # only the rebuilt wallet is counted
     assert "510.00" not in blob                  # NOT borrowed from the nearest record
 
@@ -178,7 +178,7 @@ def test_no_nearest_record_still_reports_wallet_as_unavailable():
                                  "0xabc0000000000000000000000000000000000001": Decimal("10.00")},
                  nearest=(None, {}))
     blob = _blob(_run(h, ["[2026-07-20]"])[-1])
-    assert "could not be worked out" in blob
+    assert "could not be calculated" in blob
     assert "KZP 96G1" in blob
 
 
