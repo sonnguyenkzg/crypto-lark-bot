@@ -4,7 +4,7 @@ Check Handler for Lark Bot - Following Telegram Bot Pattern
 Checks wallet balances with beautiful table format
 FIXED: Group display issue - Now correctly uses company information from wallet data
 """
-from bot.services.google_sheets_logger import GoogleSheetsBalanceLogger
+from bot.services.google_sheets_logger import GoogleSheetsBalanceLogger, VAULT_DAY_BOUNDARY
 import os
 import logging
 import re
@@ -386,7 +386,10 @@ class CheckHandler:
                             "(no saved balances found)")
             await context.topic_manager.send_command_response(
                 self._create_rebuilding_card(date_str, len(todo)), msg_type="interactive")
-            cutoff_ms = int(datetime.strptime(date_str + " 00:01:00", "%Y-%m-%d %H:%M:%S")
+            # Reconstruct at the SAME instant the saved row will claim in its Time column
+            # (VAULT_DAY_BOUNDARY). Deriving both from one constant is what stops the
+            # label and the computed figure drifting apart.
+            cutoff_ms = int(datetime.strptime(f"{date_str} {VAULT_DAY_BOUNDARY}", "%Y-%m-%d %H:%M:%S")
                             .replace(tzinfo=timezone(timedelta(hours=7))).timestamp() * 1000)
             await self._rebuild_entries(todo, cutoff_ms)
 

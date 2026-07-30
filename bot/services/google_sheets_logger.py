@@ -10,6 +10,23 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from bot.services.chain_detector import canonical_address
 
+# The vault's day boundary: a row dated D describes the balance at D 00:00:00 GMT+7.
+#
+# ONE constant, used in two places that must never disagree:
+#   - the Time column written on a rebuilt row (save_rebuilt_balances)
+#   - the cutoff CheckHandler reconstructs a missing date at
+#
+# They used to drift: rebuilt rows carried the time they were COMPUTED (e.g. 14:26:51),
+# which read as a mid-afternoon figure when the number was really the day's opening
+# balance. Import this rather than writing the literal anywhere.
+#
+# 00:00:00 rather than the scheduled runs' actual landing times, because those jitter
+# (00:00:31, 00:00:59, 00:01:03, 00:01:20, 00:01:35) -- there is no single "real" time to
+# match, so a rebuild anchors to the true GMT+7 boundary instead.
+VAULT_DAY_BOUNDARY = "00:00:00"
+REBUILT_TIME = VAULT_DAY_BOUNDARY   # what lands in the Time column of a rebuilt row
+
+
 class GoogleSheetsBalanceLogger:
     """Logger for balance check results to Google Sheets"""
 
@@ -187,11 +204,11 @@ class GoogleSheetsBalanceLogger:
             if not self._initialize_service():
                 return False, None
             batch_id = self._generate_batch_id()
-            now = datetime.now(timezone(timedelta(hours=7)))
             data_rows = [[
-                batch_id,
+                batch_id,                       # WHEN WE WROTE IT (audit trail; also makes
+                                                # earliest-batch prefer a real measurement)
                 date_str,                       # the date these balances describe
-                now.strftime("%H:%M:%S"),       # when we worked them out
+                REBUILT_TIME,                   # the INSTANT the figure describes, GMT+7
                 r["name"],
                 r.get("company", "Unknown"),
                 r.get("address", ""),
