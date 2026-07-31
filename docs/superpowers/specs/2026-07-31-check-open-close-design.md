@@ -121,9 +121,26 @@ tests to prevent a regression; no code change.
 ### The rule
 
 ```
-existed_on(D) = first_seen <= D
+existed_on(D) = first_seen < D
 first_seen    = min( created_at (when present), earliest vault row for that wallet )
 ```
+
+**Strictly earlier, not on-or-before.** A row dated D holds the balance at 00:00 GMT+7 on D. A
+wallet created *during* D did not exist at that instant — its first real balance is at 00:00 on
+D+1, which is exactly where its first vault row already sits. With `<=`, such a wallet is judged
+"existed on D but has no row", so the bot reconstructs a 00:00 figure for it and saves it: a number
+for a moment when nobody was monitoring the wallet.
+
+Measured on the live vault, **every one** of the 40 remaining rebuild wallet-days, across 18 dates,
+is a same-day creation. `<` takes them to zero. Example: `KZDW FIN OPS TRC 1`, `created_at`
+2026-07-16 with no row for that date, is today rebuilt and saved for 2026-07-16; it should be
+reported as added after that date.
+
+This also makes the data self-consistent: under `<`, closing of 2026-07-15 (which reads 2026-07-16)
+resolves to 69 clean saved rows totalling exactly 13,896,104.81, with no rebuild and no write.
+
+The guarantee below is unaffected: a wallet holding a row on D is still always counted, because the
+snapshot is consulted before this test is ever reached.
 
 A wallet not yet in existence on `target_date` is excluded from the total and reported as
 "added after this date", exactly as today — the change is only in how the date is decided.
@@ -150,9 +167,15 @@ row's date. **No saved balance can ever be excluded by this rule.**
 
 | | Before | After |
 |---|---|---|
-| Dates where a wallet existed but has no row (triggers rebuild) | 44 of 313 | **18 of 313** |
+| Dates where a wallet existed but has no row (triggers rebuild) | 44 of 313 | **0 of 313** |
+| Rebuild wallet-days | 40 | **0** |
 | Wallets with a usable start date | 44 of 71 | **71 of 71** |
 | Wallets becoming visible earlier | — | 2 |
+
+With both refinements — deriving `first_seen`, and requiring it to be strictly earlier than the
+date — the vault is effectively complete: no dated check needs to reconstruct anything for the
+wallets and dates currently present. Every apparent "gap" was either a wallet with no recorded
+start date, or a wallet created on the day itself.
 
 Totals for older dates will fall, because wallets previously reconstructed-and-counted are now
 correctly excluded as not-yet-existing. This is the intended effect, and it means an old `/check`
