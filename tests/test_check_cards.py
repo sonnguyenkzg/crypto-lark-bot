@@ -14,18 +14,13 @@ ENTRIES = [
     {"name": "Cold wallet", "company": "S5", "address": "TOLD", "chain": "TRC20",
      "status": "removed_but_saved", "balance": Decimal("1250.00")},
     {"name": "New Wallet", "company": "KZP", "address": "TNEW", "chain": "TRC20",
-     "status": "not_yet_created", "balance": None},
+     "status": "needs_rebuild", "balance": None},
 ]
 
 def test_summary_counts_only_wallets_with_a_figure():
     b = blob(H._create_historical_card(ENTRIES, "2026-07-15", {}, [], "B1"))
     assert "3 wallets counted" in b          # saved + rebuilt + removed_but_saved
     assert "1,279.41" in b                   # 19.41 + 10.00 + 1250.00
-
-def test_added_later_is_listed_but_not_counted():
-    b = blob(H._create_historical_card(ENTRIES, "2026-07-15", {}, [], None))
-    assert "New Wallet" in b
-    assert "added on or after this date" in b
 
 def test_summary_opens_with_the_monitoring_total():
     # A `removed_but_saved` status/note can no longer occur -- scope is wallets.json only,
@@ -39,7 +34,7 @@ def test_summary_opens_with_the_monitoring_total():
         {"name": "Eth One", "company": "KZO", "address": "0xabc", "chain": "ERC20",
          "status": "rebuilt", "balance": Decimal("10.00")},
         {"name": "New Wallet", "company": "KZP", "address": "TNEW", "chain": "TRC20",
-         "status": "not_yet_created", "balance": None},
+         "status": "needs_rebuild", "balance": None},
     ]
     b = blob(H._create_historical_card(entries, "2026-07-15", {}, [], None,
                                        roster_total=len(entries)))

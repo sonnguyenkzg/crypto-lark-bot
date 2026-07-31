@@ -9,7 +9,6 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from bot.services.chain_detector import canonical_address
-from bot.services.vault_calendar import build_first_seen
 
 # The vault's day boundary: a row dated D describes the balance at D 00:00:00 GMT+7.
 #
@@ -351,33 +350,29 @@ class GoogleSheetsBalanceLogger:
         nearest = min(candidates, key=lambda dp: (abs((dp[1] - target).days), dp[1] > target))[0]
         return nearest, self._build_snapshot_from_rows(rows, nearest)
 
-    def get_history_bundle(self, date_str, roster=None):
+    def get_history_bundle(self, date_str):
         """Everything the dated check needs, from ONE DAILY_REPORT read.
 
-        Returns {"ok", "snapshot", "nearest_date", "nearest_snapshot", "first_seen"}.
+        Returns {"ok", "snapshot", "nearest_date", "nearest_snapshot"}.
 
         `ok` is False whenever the read failed. A caller MUST treat that as "I don't
         know what's saved", never as "nothing is saved" -- confusing the two is what
         once made /check rebuild and duplicate 68 already-saved wallets.
-
-        `first_seen` is {} unless a roster is supplied. The sheet is ~17,500 rows, so
-        deriving it here rather than re-reading keeps the command to a single read.
         """
         rows = self._read_daily_report_rows()
         if rows is None:
             return {"ok": False, "snapshot": {}, "nearest_date": None,
-                    "nearest_snapshot": {}, "first_seen": {}}
+                    "nearest_snapshot": {}}
 
-        first_seen = build_first_seen(roster, rows) if roster else {}
         exact = self._build_snapshot_from_rows(rows, date_str)
         if exact:
             return {"ok": True, "snapshot": exact, "nearest_date": None,
-                    "nearest_snapshot": {}, "first_seen": first_seen}
+                    "nearest_snapshot": {}}
 
         dates = sorted({r[1] for r in rows if len(r) > 1 and r[1]})
         nearest_date, nearest_snapshot = self._nearest_from(rows, dates, date_str)
         return {"ok": True, "snapshot": {}, "nearest_date": nearest_date,
-                "nearest_snapshot": nearest_snapshot, "first_seen": first_seen}
+                "nearest_snapshot": nearest_snapshot}
 
     def get_snapshot_and_nearest(self, date_str):
         """Back-compatible 4-tuple view of get_history_bundle: (snapshot, nearest_date,

@@ -30,10 +30,6 @@ def test_missing_wallet_needs_rebuild():
     assert r["status"] == "needs_rebuild" and r["balance"] is None
     assert r["chain"] == "ERC20"          # carried through for the rebuild call
 
-def test_wallet_created_after_the_date():
-    rows = H.classify_wallets(ROSTER, snap(("TAAA", "KZP 96G1", "KZP", "19.41")), "2026-07-15")
-    assert by_name(rows)["New Wallet"]["status"] == "not_yet_created"
-
 def test_wallet_created_before_the_date_is_expected():
     rows = H.classify_wallets(ROSTER, {}, "2026-07-25")     # after New Wallet was added
     assert by_name(rows)["New Wallet"]["status"] == "needs_rebuild"

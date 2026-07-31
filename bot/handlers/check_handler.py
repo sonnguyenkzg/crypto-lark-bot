@@ -177,7 +177,7 @@ class CheckHandler:
                         'address': wallet['address'],
                         'company': company_name,  # Use the actual company name from the data structure
                         'chain': wallet.get('chain', 'TRC20'),  # Include chain information (default to TRC20 for backward compatibility)
-                        'created_at': wallet.get('created_at')  # Feeds /check [date]'s existence rule (build_first_seen / _existed_on)
+                        'created_at': wallet.get('created_at')  # Carried through for other consumers; not consulted by /check [date]
                     }
 
             # Date present -> historical branch (Task 8); wallet_data doubles as the
@@ -295,71 +295,17 @@ class CheckHandler:
             _CHECK_EXECUTION_LOCK = False
             logger.info(f"🔓 Check command UNLOCKED - Execution finished for user {context.sender_id}")
 
-    def _existed_by(self, created_at, date_str):
-        """True if a wallet with this created_at already existed at date_str's 00:00 GMT+7.
-
-        Legacy fallback, used only when no first_seen map is supplied. Applies the same
-        strict rule as _existed_on, for the same reason: a wallet created DURING a day
-        did not exist at that day's 00:00 GMT+7 boundary, which is the only instant a
-        row for that date describes.
-
-        Missing OR unparseable created_at -> True (safe direction: still expect it,
-        so a snapshot-missing wallet still surfaces in the completeness guard)."""
-        if not created_at:
-            return True
-        prefix = str(created_at)[:10]
-        try:
-            datetime.strptime(prefix, "%Y-%m-%d")   # must be a real ISO date
-        except (ValueError, TypeError):
-            return True                              # unparseable -> safe direction
-        return prefix < date_str
-
-    def _existed_on(self, first_seen, wallet, date_str):
-        """True if `wallet` already existed at `date_str`'s 00:00 GMT+7 boundary.
-
-        Prefers the derived first_seen map (min of created_at and the earliest saved
-        row); falls back to created_at alone when no map was supplied. An unknown
-        first_seen means no evidence either way -> assume it existed, the safe
-        direction, so a missing figure still surfaces instead of being hidden.
-
-        The comparison is STRICT (`<`, not `<=`). A row dated D holds the balance at
-        00:00 GMT+7 on D, so a wallet created during D did not exist at the only instant
-        that row describes. It is reported as added after that date; its first real
-        figure is the row dated D+1, which is exactly where its first saved row already
-        sits. With `<=` such a wallet was instead judged "existed on D but has no row",
-        so the bot reconstructed and SAVED a 00:00 figure for a moment when nobody was
-        monitoring the wallet -- 40 wallet-days across 18 dates in the live record.
-
-        This cannot hide a figure we hold: classify_wallets consults the saved snapshot
-        BEFORE calling this, so a wallet with a row on D is already "saved" and never
-        reaches this test.
-        """
-        if first_seen is None:
-            return self._existed_by(wallet.get("created_at"), date_str)
-        fs = first_seen.get(canonical_address(wallet.get("address", "")))
-        if not fs:
-            return True
-        return fs < date_str
-
-    def classify_wallets(self, roster, snapshot, date_str, first_seen=None):
+    def classify_wallets(self, roster, snapshot, date_str):
         """Decide, per wallet, what we can show for `date_str`. Pure - no network.
 
-        SCOPE: the wallets currently in wallets.json, and only those. A wallet that
-        has since been removed from monitoring is ignored even if the daily record
-        still holds a figure for it that day -- reporting is about the wallets under
-        monitoring now, so the count always reconciles to wallets.json.
+        SCOPE: the wallets in wallets.json, and only those -- but ALL of them, always.
+        When a wallet was added to the list is never consulted: a wallet that did not
+        exist on `date_str` reconstructs to 0.00, which is the truthful answer. The
+        previous rule excluded such wallets and hid real money -- 31 wallets were
+        already holding 20,184,069.03 USDT combined before they entered monitoring.
 
-        status: saved            - a figure was recorded that day
-                needs_rebuild    - existed then, no figure recorded -> work it out
-                not_yet_created  - added on or after this date, so it has no balance
-                                   at this date's 00:00 GMT+7 boundary
-
-        `first_seen` maps canonical address -> the earliest date the wallet is known to
-        have existed (see vault_calendar.build_first_seen). When omitted, existence
-        falls back to created_at alone, which is the pre-2026-07-31 behaviour.
-
-        Order matters: the saved snapshot is consulted FIRST, so a wallet holding a row
-        for this date is always counted, whatever the existence rule would have said.
+        status: saved         - a figure was recorded that day
+                needs_rebuild - no figure recorded, so work it out from the chain
         """
         out = []
         for w in roster:
@@ -367,14 +313,11 @@ class CheckHandler:
             entry = snapshot.get(key)
             if entry:
                 status, balance = "saved", entry["balance"]
-            elif self._existed_on(first_seen, w, date_str):
-                status, balance = "needs_rebuild", None
             else:
-                status, balance = "not_yet_created", None
+                status, balance = "needs_rebuild", None
             out.append({"name": w.get("wallet"), "company": w.get("company", "Unknown"),
                         "address": w.get("address", ""), "chain": w.get("chain", "TRC20"),
                         "status": status, "balance": balance})
-
         return out
 
     async def _handle_historical(self, context: Any, date_str: str, other_tokens: List[str],
@@ -383,7 +326,7 @@ class CheckHandler:
 
         Validates the date, classifies the remaining tokens into group/name filters,
         then resolves each wallet INDEPENDENTLY for that date (classify_wallets): already
-        saved, rebuilt from chain history and saved back, added after the date, or failed.
+        saved, rebuilt from chain history and saved back, or failed.
         Whatever gets rebuilt is written back, so this date is never fully rebuilt twice.
 
         `date_str` is the day the USER asked about and is what every card says. The vault
@@ -422,10 +365,9 @@ class CheckHandler:
                   for i in wallet_data.values()]
 
         # Off the event loop: reading the sheet blocks (and retries), and the bot serves
-        # every other command plus its health check on this single loop. One read yields
-        # both the snapshot and first_seen, so existence is judged from the same data.
+        # every other command plus its health check on this single loop.
         bundle = await asyncio.to_thread(
-            self.sheets_logger.get_history_bundle, target_date, roster)
+            self.sheets_logger.get_history_bundle, target_date)
 
         # CRITICAL: a failed read must NEVER be treated as "nothing is saved for this
         # date". That confusion is exactly what caused /check [2026-07-15] to rebuild and
@@ -437,9 +379,8 @@ class CheckHandler:
             return False
 
         snapshot = bundle["snapshot"]
-        first_seen = bundle["first_seen"]
 
-        entries = self.classify_wallets(roster, snapshot, target_date, first_seen)
+        entries = self.classify_wallets(roster, snapshot, target_date)
         entries, fuzzy, not_found = self._filter_entries(entries, groups, names)
 
         # Acknowledge immediately (same courtesy as the live /check path): reading the
@@ -982,7 +923,6 @@ class CheckHandler:
 
         n_saved = sum(1 for e in counted if e["status"] == "saved")
         n_rebuilt = sum(1 for e in counted if e["status"] == "rebuilt")
-        later = [e for e in entries if e["status"] == "not_yet_created"]
         failed = [e["name"] for e in entries if e["status"] == "failed"]
 
         def names(ns):
@@ -994,9 +934,9 @@ class CheckHandler:
         lines = []
         if filtered:
             # "in scope" is how many wallets the filter selected -- NOT how many ended up
-            # with a figure. Those are different numbers whenever a selected wallet was
-            # added after the date, and labelling the second as the first read as a
-            # contradiction against the acknowledgement card.
+            # with a figure. Those are different numbers whenever a selected wallet could
+            # not be reconstructed in time (status "failed"), and labelling the second as
+            # the first read as a contradiction against the acknowledgement card.
             lines.append(f"📊 **Wallets in scope: {len(entries)} of {roster_total} "
                          f"monitored**")
         else:
@@ -1005,15 +945,6 @@ class CheckHandler:
             lines.append(f"• **{n_saved}** have a balance recorded for this date")
         if n_rebuilt:
             lines.append(f"• **{n_rebuilt}** were calculated from blockchain records")
-        if later:
-            # Capped: an old date can carry dozens of wallets added since, and naming
-            # every one buries the actual result under a wall of names nobody reads.
-            if len(later) <= 5:
-                later_names = ", ".join(f"**{e['name']}**" for e in later)
-                lines.append(f"• {later_names} — added on or after this date, so no balance yet")
-            else:
-                lines.append(f"• **{len(later)} wallets** were added on or after this date, "
-                             "so they have no balance yet")
         if failed:
             lines.append(f"• {names(failed)} — could not be calculated, so not counted")
         lines.append(f"➡️ **{len(counted)} {'wallet' if len(counted) == 1 else 'wallets'} "
@@ -1033,8 +964,8 @@ class CheckHandler:
             {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}},
         ]
 
-        # (added-later / removed / could-not-work-out are itemised in the summary above,
-        # so they are not repeated as separate notes here.)
+        # (could-not-work-out is itemised in the summary above, so it is not repeated
+        # as a separate note here.)
 
         for want, matches in (fuzzy or {}).items():
             header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":

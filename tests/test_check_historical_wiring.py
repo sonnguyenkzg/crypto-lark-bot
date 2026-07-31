@@ -34,20 +34,15 @@ ROSTER = {"companies": {
 }}
 
 
-def _bundle(snapshot=None, nearest_date=None, nearest_snapshot=None, ok=True, first_seen=None):
-    """Build the five-key dict get_history_bundle returns.
+def _bundle(snapshot=None, nearest_date=None, nearest_snapshot=None, ok=True):
+    """Build the four-key dict get_history_bundle returns.
 
     The handler reads the sheet through get_history_bundle (Task 4 made one read yield
-    both the snapshot and first_seen; get_snapshot_and_nearest is now only a thin
-    4-tuple view OVER it, so stubbing that view cannot influence the handler).
-
-    first_seen defaults to {} -- an empty map means "no evidence either way", which
-    classify_wallets treats as "assume the wallet existed". That is exactly what the
-    created_at-only rule did for every wallet in ROSTER (created 2026-01-01, well before
-    any date under test), so these doubles classify identically to before the refactor.
+    the snapshot; get_snapshot_and_nearest is now only a thin 4-tuple view OVER it, so
+    stubbing that view cannot influence the handler).
     """
     return {"ok": ok, "snapshot": snapshot or {}, "nearest_date": nearest_date,
-            "nearest_snapshot": nearest_snapshot or {}, "first_seen": first_seen or {}}
+            "nearest_snapshot": nearest_snapshot or {}}
 
 
 def _handler(monkeysnapshot=None, monkeybalances=None, nearest=None):
@@ -58,7 +53,7 @@ def _handler(monkeysnapshot=None, monkeybalances=None, nearest=None):
         near_date, near_snap = nearest if nearest else (None, {})
         h.sheets_logger.get_snapshot_for_date = lambda d: monkeysnapshot
         h.sheets_logger.get_history_bundle = (
-            lambda d, roster=None: _bundle(snapshot=monkeysnapshot) if monkeysnapshot
+            lambda d: _bundle(snapshot=monkeysnapshot) if monkeysnapshot
             else _bundle(nearest_date=near_date, nearest_snapshot=near_snap))
     if monkeybalances is not None:
         h.balance_service.get_balance_at = (
@@ -221,7 +216,7 @@ def test_only_missing_wallets_are_rebuilt_and_saved(args, expected_save_date):
     rebuilt_for, rebuilt_cutoffs, saved_rows = [], [], {}
     h = CheckHandler()
     h.wallet_service.list_wallets = lambda: (True, ROSTER)
-    h.sheets_logger.get_history_bundle = lambda d, roster=None: _bundle(snapshot=saved)
+    h.sheets_logger.get_history_bundle = lambda d: _bundle(snapshot=saved)
 
     def fake_rebuild(addr, chain, cutoff, deadline=None):
         rebuilt_for.append(addr)
@@ -254,7 +249,7 @@ def test_slow_sheets_read_does_not_freeze_the_event_loop():
     snapshot = {"TAAA": {"wallet_name": "KZP 96G1", "company": "KZP", "address": "TAAA",
                          "balance": Decimal("10.00"), "batch_id": "b", "time": "t"}}
 
-    def slow_read(date_str, roster=None):
+    def slow_read(date_str):
         time.sleep(0.4)                        # blocking, like the real Sheets client
         return _bundle(snapshot=snapshot)
 
@@ -347,7 +342,7 @@ def test_read_failure_sends_unavailable_card_and_triggers_zero_writes():
     save_calls = []
     h = CheckHandler()
     h.wallet_service.list_wallets = lambda: (True, ROSTER)
-    h.sheets_logger.get_history_bundle = lambda d, roster=None: _bundle(ok=False)  # read failed
+    h.sheets_logger.get_history_bundle = lambda d: _bundle(ok=False)  # read failed
 
     def spy_get_balance_at(addr, chain, cutoff, deadline=None):
         balance_calls.append(addr)
@@ -381,7 +376,7 @@ def test_nothing_saved_when_nothing_was_rebuilt():
     calls = []
     h = CheckHandler()
     h.wallet_service.list_wallets = lambda: (True, ROSTER)
-    h.sheets_logger.get_history_bundle = lambda d, roster=None: _bundle(snapshot=saved)
+    h.sheets_logger.get_history_bundle = lambda d: _bundle(snapshot=saved)
     h.sheets_logger.save_rebuilt_balances = lambda d, r: calls.append(r) or (True, "X")
     blob = _blob(_run(h, ["[2026-07-20]"])[-1])
     assert calls == []                           # nothing to save -> no write
