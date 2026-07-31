@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sys
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -96,6 +97,10 @@ def main():
     ap.add_argument("--wallet", action="append", default=None,
                      help="only process this wallet, by its exact name in wallets.json "
                           "(repeatable, e.g. --wallet 'OKKZ1A' --wallet 'OKKZ 2')")
+    ap.add_argument("--chunk-days", type=float, default=1,
+                     help="chunk size in days for the chunked fallback fetch used when a "
+                          "wallet's transfer history is too long for a single query "
+                          "(default: 1). Only affects wallets that hit that fallback.")
     args = ap.parse_args()
 
     if args.write and in_blackout():
@@ -173,6 +178,19 @@ def main():
             continue
 
         transfers = svc._fetch_transfers_after(addr, chain, day_boundary_ms(args.start))
+        if transfers is None:
+            # A very high-volume wallet blows through Tronscan's 10,000-per-query cap in
+            # one shot. Fall back to chunked windowed fetching, which slices the window
+            # into days (each far under the cap) and is provably complete per chunk.
+            # CRITICAL: fetch to NOW, not to the window end -- balances_by_date subtracts
+            # from the CURRENT balance, so a short end bound understates every date by the
+            # net of the transfers it omits.
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            transfers = svc.fetch_transfers_between(
+                addr, chain, day_boundary_ms(args.start), now_ms, chunk_days=1)
+            if transfers is not None:
+                print(f"[{n:>3}/{len(roster)}] {name:<28} chunked fetch: "
+                      f"{len(transfers):,} transfers")
         if transfers is None:
             missing_days = sum(1 for d in dates if key not in existing.get(d, {}))
             unfilled_from_unavailable += missing_days
