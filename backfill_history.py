@@ -26,7 +26,7 @@ from decimal import Decimal
 # an operator who forgets to export them by hand would silently hit "sheet unconfigured"
 # and this script would refuse to run for the wrong reason.
 from bot.utils.config import Config
-from bot.services.balance_history import balances_by_date, day_boundary_ms
+from bot.services.balance_history import balances_by_date, day_boundary_ms, signed_net
 from bot.services.balance_service import BalanceService
 from bot.services.chain_detector import canonical_address
 from bot.services.google_sheets_logger import GoogleSheetsBalanceLogger
@@ -199,14 +199,19 @@ def main():
         chain = wallet.get("chain", "TRC20")
         key = canonical_address(addr)
 
-        current = svc.get_balance(addr, chain)
-        if current is None:
-            missing_days = sum(1 for d in dates if key not in existing.get(d, {}))
-            unfilled_from_unavailable += missing_days
-            unavailable.append((name, "current balance unavailable", missing_days))
-            print(f"[{n:>3}/{len(roster)}] {name:<28} SKIPPED - current balance unavailable "
-                  f"({missing_days} wallet-days left unfilled)")
-            continue
+        # T anchors this ENTIRE wallet's derivation to one explicit instant. The old
+        # code read the current balance, then separately fetched transfers "up to now"
+        # -- two DIFFERENT instants, sometimes minutes apart (a slow/chunked transfer
+        # fetch, or simply queueing behind other wallets in a ~50-minute run). Any
+        # transfer landing in that gap was counted on one side but not the other,
+        # silently offsetting EVERY derived date for that wallet by the same constant
+        # amount. Proven: "KZO PH SETTLE TRC 1" was off by exactly -4,049.00 on 20+
+        # dates spanning January to April -- exactly its own +4,049.00 transfer that
+        # landed mid-run. The fix is to pin the transfer fetch to an explicit T, read
+        # the balance AFTER that fetch (b2), and correct b2 back to T with a small
+        # "tail" fetch covering whatever landed in (T, now]. Both sides then describe
+        # the same instant T, instead of two instants that merely happen to be close.
+        T = int(time.time() * 1000)
 
         transfers = svc._fetch_transfers_after(addr, chain, day_boundary_ms(args.start))
         if transfers is None:
@@ -217,19 +222,12 @@ def main():
             # it is only tried after the fast path has already refused -- the other ~69
             # wallets never pay for it.
             #
-            # CRITICAL: end_ms MUST be "now" (int(time.time() * 1000)), NOT the end of the
-            # --start/--end backfill window. balances_by_date() computes
-            # balance_at(D) = current_balance - net(transfers strictly after D), and
-            # `current` (fetched above via get_balance) is the balance AS OF NOW. Fetching
-            # only up to the window end would silently omit every transfer between the
-            # window end and now, understating every single derived date by that same
-            # missing net amount -- a constant offset that still looks plausible row by
-            # row. (Hit exactly this while verifying: passing day_boundary_ms(args.end)
-            # here made every derived value for "KZDW DPP TH 2" too high by +16,032.07,
-            # precisely that wallet's net inflow between --end and now.)
-            now_ms = int(time.time() * 1000)
+            # CRITICAL: end_ms is T -- the SAME instant captured above, not a freshly
+            # captured "now". The whole point of T is that every path (fast or chunked)
+            # anchors to one identical instant, so the later tail correction only has to
+            # cover (T, now], never a second, independently-drifting boundary.
             transfers = svc.fetch_transfers_between(
-                addr, chain, day_boundary_ms(args.start), now_ms,
+                addr, chain, day_boundary_ms(args.start), T,
                 chunk_days=args.chunk_days)
             if transfers is not None:
                 log.info(f"{name}: fast-path transfer fetch unavailable, used chunked "
@@ -246,7 +244,46 @@ def main():
                   f"({missing_days} wallet-days left unfilled)")
             continue
 
-        series = balances_by_date(current, transfers, addr, dates)
+        # b2: the balance, read AFTER the (possibly slow) transfer fetch above -- never
+        # before it. Reading it first and reusing that value would reopen exactly the
+        # race this whole block exists to close.
+        b2 = svc.get_balance(addr, chain)
+        if b2 is None:
+            missing_days = sum(1 for d in dates if key not in existing.get(d, {}))
+            unfilled_from_unavailable += missing_days
+            unavailable.append((name, "current balance unavailable", missing_days))
+            print(f"[{n:>3}/{len(roster)}] {name:<28} SKIPPED - current balance unavailable "
+                  f"({missing_days} wallet-days left unfilled)")
+            continue
+
+        # tail: whatever landed in (T, now] -- normally empty or tiny, since T was
+        # captured only moments to minutes ago and this query costs one extra small
+        # fetch per wallet. A FAILED tail fetch must NOT be treated as "no tail": silently
+        # assuming zero would reopen the exact race this fix exists to close and corrupt
+        # every date for the wallet the same way the original bug did, so a failure here
+        # means the wallet is unavailable, not zero.
+        tail = svc._fetch_transfers_after(addr, chain, T)
+        if tail is None:
+            missing_days = sum(1 for d in dates if key not in existing.get(d, {}))
+            unfilled_from_unavailable += missing_days
+            unavailable.append((name, "post-fetch tail-correction transfers unavailable "
+                                      "-- refusing to guess", missing_days))
+            print(f"[{n:>3}/{len(roster)}] {name:<28} SKIPPED - tail-correction fetch "
+                  f"unavailable ({missing_days} wallet-days left unfilled)")
+            continue
+
+        # Same signed-net convention balances_by_date uses internally (+received,
+        # -sent, canonical_address on both sides) -- imported from balance_history.py
+        # rather than reimplemented here, so there is exactly one implementation of it.
+        tail_net = signed_net(tail, addr)
+        if tail:
+            log.info(f"{name}: tail correction, {len(tail)} transfer(s) after T, "
+                     f"net={tail_net:+,.2f}")
+            print(f"[{n:>3}/{len(roster)}] {name:<28} tail correction: {len(tail)} "
+                  f"transfer(s) after T, net={tail_net:+,.2f}")
+        current_at_T = b2 - tail_net
+
+        series = balances_by_date(current_at_T, transfers, addr, dates)
 
         gaps = 0
         for d in dates:

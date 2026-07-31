@@ -21,6 +21,28 @@ def day_boundary_ms(date_str):
                .replace(tzinfo=GMT7).timestamp() * 1000)
 
 
+def signed_net(transfers, address):
+    """Signed net of `address`'s successful transfers: +received, -sent, addresses
+    compared through canonical_address. Same delta convention `balances_by_date` uses
+    internally (see its per-transfer `delta` below), factored out here so any OTHER
+    caller needing a net over a transfer list -- e.g. correcting a balance reading back
+    to an earlier instant using a short "tail" of transfers -- does not duplicate it
+    with a second, potentially-drifting implementation. Purely additive: does not
+    change `balances_by_date` itself.
+    """
+    me = canonical_address(address)
+    net = Decimal(0)
+    for t in transfers or []:
+        if not t.get("success", True):
+            continue
+        amount = t["amount"]
+        if canonical_address(t.get("to", "")) == me:
+            net += amount
+        if canonical_address(t.get("from", "")) == me:
+            net -= amount
+    return net
+
+
 def balances_by_date(current_balance, transfers, address, dates):
     """Balance at each date's 00:00 GMT+7, derived from one transfer list.
 
