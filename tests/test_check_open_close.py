@@ -87,12 +87,21 @@ def test_classify_still_works_without_a_first_seen_map():
 # --- guards ---
 
 def test_modifier_without_a_date_is_rejected():
-    """Without this, [o] would fall through to the filter and match OKKZ wallets."""
+    """Without this, [o] would fall through to the filter and match OKKZ wallets.
+
+    The error card now legitimately names OKKZ/KZO COY as *example group names* a
+    filtering user could type instead (Finding 3), so a blunt "OKKZ not in the card"
+    check would fail on that intentional text. Assert the real guarantee instead: this
+    must be the error card, not an actual wallet-balance result -- no total, no USDT
+    figure, none of the balance-table card's own header.
+    """
     h = CheckHandler()
     cards = run(h, ["[o]"])
     assert len(cards) == 1
-    assert "date" in blob(cards).lower()
-    assert "OKKZ" not in blob(cards)
+    b = blob(cards)
+    assert "date" in b.lower()
+    assert "USDT" not in b, "must be an error card, not real wallet balances"
+    assert "Wallet Balance Check" not in b
 
 
 def test_opening_and_closing_together_is_rejected():
@@ -152,3 +161,101 @@ def test_target_date_passed_to_the_pipeline(args, expected_target):
 
 def test_closing_of_D_reads_the_same_date_as_opening_of_D_plus_one():
     assert target_date_for("2026-07-15", "closing") == target_date_for("2026-07-16", "opening")
+
+
+# --- classify_wallets is addressed by target_date in the historical handler, not date_str ---
+
+def test_wallet_added_on_dplus1_needs_rebuild_for_closing_of_d():
+    """Fence for the ONE vault-addressing site with no direct test: `classify_wallets` in
+    `_handle_historical` must be called with `target_date`, not `date_str`. Reverting
+    that one call leaves the rest of the suite green, so this test exists solely to
+    catch the revert.
+
+    A wallet whose first_seen is D+1 (added that day; no vault row for D yet) must
+    classify as needs_rebuild for closing-of-D, because closing-of-D reads the vault
+    row dated D+1, where the wallet DOES exist. Addressed by date_str (D) instead, the
+    same wallet reads as not_yet_created and silently vanishes from the report.
+    """
+    h = CheckHandler()
+    h.wallet_service.list_wallets = lambda: (True, {"companies": {
+        "CO": [{"name": "W1", "address": "TAAA", "chain": "TRC20", "created_at": None}]}})
+
+    def fake_bundle(date_str, roster=None):
+        return {"ok": True, "snapshot": {}, "nearest_date": None,
+                "nearest_snapshot": {}, "first_seen": {"TAAA": "2026-07-16"}}
+
+    with patch.object(h.sheets_logger, "get_history_bundle", side_effect=fake_bundle), \
+            patch.object(CheckHandler, "_rebuild_entries", return_value=None):
+        cards = run(h, ["[2026-07-15]"])   # default mode = closing -> target_date 2026-07-16
+
+    assert "Rebuilding" in titles(cards), (
+        "the wallet existed by 2026-07-16 (the closing target date), so it must need "
+        "rebuilding for 2026-07-15's closing figure, not be dropped as not_yet_created")
+
+
+# --- Task 6: cards state the basis and the date they read ---
+
+def _entries(n_saved=2, n_later=0):
+    out = [{"name": f"W{i}", "company": "CO", "address": f"T{i}", "chain": "TRC20",
+            "status": "saved", "balance": 100} for i in range(n_saved)]
+    out += [{"name": f"L{i}", "company": "CO", "address": f"L{i}", "chain": "TRC20",
+             "status": "not_yet_created", "balance": None} for i in range(n_later)]
+    return out
+
+
+def _header(card):
+    return card["header"]["title"]["content"]
+
+
+def test_card_header_states_the_basis():
+    h = CheckHandler()
+    closing = h._create_historical_card(_entries(), "2026-07-15", [], [], None,
+                                        "closing", "2026-07-16")
+    opening = h._create_historical_card(_entries(), "2026-07-15", [], [], None,
+                                        "opening", "2026-07-15")
+    assert "Closing" in _header(closing)
+    assert "Opening" in _header(opening)
+    assert "Opening" not in _header(closing)
+    assert "Closing" not in _header(opening)
+
+
+def test_closing_card_names_the_date_it_read():
+    """Without this the figure cannot be reconciled against the sheet."""
+    h = CheckHandler()
+    b = blob([h._create_historical_card(_entries(), "2026-07-15", [], [], None,
+                                        "closing", "2026-07-16")])
+    assert "2026-07-15" in b, "the day the user asked about"
+    assert "2026-07-16" in b, "the vault date the figure came from"
+
+
+def test_opening_card_does_not_mention_a_second_date():
+    """For an opening query the target IS the requested date, so there is no second
+    date to explain. Mentioning 2026-07-16 there would be nonsense."""
+    h = CheckHandler()
+    b = blob([h._create_historical_card(_entries(), "2026-07-15", [], [], None,
+                                        "opening", "2026-07-15")])
+    assert "2026-07-16" not in b
+    assert "2026-07-14" not in b
+
+
+def test_added_later_wallets_are_named_when_there_are_five_or_fewer():
+    h = CheckHandler()
+    b = blob([h._create_historical_card(_entries(2, 3), "2026-07-15", [], [], None,
+                                        "closing", "2026-07-16")])
+    assert "L0" in b and "L1" in b and "L2" in b
+
+
+def test_added_later_wallets_are_counted_when_there_are_more_than_five():
+    h = CheckHandler()
+    b = blob([h._create_historical_card(_entries(2, 41), "2026-07-15", [], [], None,
+                                        "closing", "2026-07-16")])
+    assert "41" in b
+    assert "L40" not in b, "must not list forty-one wallet names"
+
+
+def test_help_teaches_the_new_grammar():
+    from bot.handlers.help_handler import HelpHandler
+    cards = run(HelpHandler(), [])
+    b = blob(cards)
+    assert "[o]" in b and "[c]" in b
+    assert "closing" in b.lower() and "opening" in b.lower()

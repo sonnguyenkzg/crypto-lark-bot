@@ -426,7 +426,7 @@ class CheckHandler:
         # can report the match count, echoing back what was understood.
         await context.topic_manager.send_command_response(
             self._create_historical_checking_card(date_str, groups, names, len(entries),
-                                                  roster_total=len(roster)),
+                                                  mode=mode, roster_total=len(roster)),
             msg_type="interactive")
 
         todo = [e for e in entries if e["status"] == "needs_rebuild"]
@@ -439,7 +439,7 @@ class CheckHandler:
                 logger.info(f"Rebuilding ALL {len(todo)} wallets in scope for {target_date} "
                             "(no saved balances found)")
             await context.topic_manager.send_command_response(
-                self._create_rebuilding_card(date_str, len(todo)), msg_type="interactive")
+                self._create_rebuilding_card(date_str, len(todo), target_date), msg_type="interactive")
             # Reconstruct at the SAME instant the saved row will claim in its Time column
             # (VAULT_DAY_BOUNDARY). Deriving both from one constant is what stops the
             # label and the computed figure drifting apart.
@@ -461,6 +461,7 @@ class CheckHandler:
             saved_batch = batch if ok else None
 
         card = self._create_historical_card(entries, date_str, fuzzy, not_found, saved_batch,
+                                           mode=mode, target_date=target_date,
                                            roster_total=len(roster), filtered=bool(groups or names))
 
         await context.topic_manager.send_command_response(card, msg_type="interactive")
@@ -925,8 +926,17 @@ class CheckHandler:
         }
 
     def _create_historical_card(self, entries, date_str, fuzzy, not_found, saved_batch,
-                                roster_total=None, filtered=False):
-        """Balance table for a past date, plus a plain account of where each figure came from."""
+                                mode=None, target_date=None, roster_total=None, filtered=False):
+        """Balance table for a past date, plus a plain account of where each figure came from.
+
+        `date_str` is the day the user asked about; `target_date` is the vault row the
+        figure was actually read from -- the same day for an opening balance, the day
+        after for a closing balance (vault_calendar.target_date_for). Both are stated on
+        the card, so a closing figure can always be reconciled against the sheet instead
+        of looking wrong under the date the user typed.
+        """
+        mode = mode or CLOSING
+        target_date = target_date or date_str
         counted = [e for e in entries if e["balance"] is not None]
         rows = [{"name": e["name"], "company": e["company"], "address": e["address"],
                  "balance": e["balance"], "source": e["status"]} for e in counted]
@@ -950,7 +960,7 @@ class CheckHandler:
 
         n_saved = sum(1 for e in counted if e["status"] == "saved")
         n_rebuilt = sum(1 for e in counted if e["status"] == "rebuilt")
-        later = [e["name"] for e in entries if e["status"] == "not_yet_created"]
+        later = [e for e in entries if e["status"] == "not_yet_created"]
         failed = [e["name"] for e in entries if e["status"] == "failed"]
 
         def names(ns):
@@ -974,14 +984,32 @@ class CheckHandler:
         if n_rebuilt:
             lines.append(f"• **{n_rebuilt}** were calculated from blockchain records")
         if later:
-            lines.append(f"• {names(later)} — added after this date, so no balance yet")
+            # Capped: an old date can carry dozens of wallets added since, and naming
+            # every one buries the actual result under a wall of names nobody reads.
+            if len(later) <= 5:
+                later_names = ", ".join(f"**{e['name']}**" for e in later)
+                lines.append(f"• {later_names} — added after this date, so no balance yet")
+            else:
+                lines.append(f"• **{len(later)} wallets** were added after this date, "
+                             "so they have no balance yet")
         if failed:
             lines.append(f"• {names(failed)} — could not be calculated, so not counted")
         lines.append(f"➡️ **{len(counted)} {'wallet' if len(counted) == 1 else 'wallets'} "
                      f"counted** in the total below")
 
-        header_elements = [{"tag": "div",
-                            "text": {"tag": "lark_md", "content": "\n".join(lines)}}]
+        # States the basis explicitly, and -- for closing -- the vault date the figure
+        # was actually read from, so the number can be reconciled against the sheet.
+        if mode == OPENING:
+            basis_line = (f"Opening balance of **{date_str}** — the balance at 00:00 "
+                         "GMT+7 that morning")
+        else:
+            basis_line = (f"Closing balance of **{date_str}** — the balance at 00:00 "
+                         f"GMT+7 on **{target_date}**")
+
+        header_elements = [
+            {"tag": "div", "text": {"tag": "lark_md", "content": basis_line}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}},
+        ]
 
         # (added-later / removed / could-not-work-out are itemised in the summary above,
         # so they are not repeated as separate notes here.)
@@ -1000,7 +1028,7 @@ class CheckHandler:
         if saved_batch:
             header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
                 f"📈 **{n_rebuilt} rebuilt {'balance' if n_rebuilt == 1 else 'balances'} "
-                f"saved to Google Sheets** (Batch ID: {saved_batch})"}})
+                f"saved to Google Sheets for {target_date}** (Batch ID: {saved_batch})"}})
 
         base_card["elements"] = header_elements + table_elements
         grand_total = sum(balances.values()) if balances else Decimal("0")
@@ -1015,7 +1043,8 @@ class CheckHandler:
             template = "purple" if n_rebuilt else "blue"
         base_card["header"] = {
             "template": template,
-            "title": {"tag": "plain_text", "content": "🕰️ Historical Wallet Balance Check"},
+            "title": {"tag": "plain_text",
+                      "content": f"🕰️ {'Opening' if mode == OPENING else 'Closing'} Balance"},
             "subtitle": {"tag": "plain_text", "content": subtitle},
         }
         return base_card
@@ -1087,7 +1116,7 @@ class CheckHandler:
     def _simple_notice_card(self, template: str, title: str, body: str) -> dict:
         """A one-message notice card, matching the existing error cards' shape."""
         return {
-            "config": {"wide_screen_mode": True},
+            "config": {"wide_screen_mode": True, "enable_forward": False},
             "header": {"template": template,
                        "title": {"tag": "plain_text", "content": title}},
             "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": body}}],
@@ -1103,13 +1132,22 @@ class CheckHandler:
             "• **/check [2026-07-15]** — closing, the default")
 
     def _create_mode_without_date_card(self, mode: str) -> dict:
-        """A basis modifier with no date. Opening/closing only mean something for a day."""
+        """A basis modifier with no date. Opening/closing only mean something for a day.
+
+        Before opening/closing existed, `/check [o]` or `/check [c]` with no date fell
+        through to the fuzzy wallet filter -- [o] matched the ten OKKZ wallets by
+        prefix, [c] matched the KZO COY wallets by "contains". Someone who was using
+        [o]/[c] that way now gets this error instead, so the card tells them what to
+        type to get the same wallet group: its name, not a basis letter.
+        """
         word = "opening" if mode == OPENING else "closing"
         return self._simple_notice_card(
             "orange", "⚠️ A Date Is Needed",
             f"The {word} balance is the balance of a particular day, so please say which day.\n\n"
             f"• **/check [2026-07-15] [{'o' if mode == OPENING else 'c'}]** — that day's {word} balance\n"
-            "• **/check** — balances right now")
+            "• **/check** — balances right now\n\n"
+            "Looking for a group of wallets by name instead? Use the group's name directly, "
+            "for example **/check [OKKZ]** or **/check [KZO COY]**.")
 
     def _create_day_not_finished_card(self, date_str: str) -> dict:
         """Closing of today: the day has not ended yet."""
@@ -1162,13 +1200,17 @@ class CheckHandler:
         }
 
     def _create_historical_checking_card(self, date_str, groups=None, names=None, matched=None,
-                                         roster_total=None) -> dict:
+                                         mode=None, roster_total=None) -> dict:
         """Confirm what the bot understood, before any waiting begins.
 
         States the number of wallets under monitoring rather than an internal "matched"
-        count, so the figure always reconciles to the wallet list.
+        count, so the figure always reconciles to the wallet list. Also states which
+        basis (opening or closing) is being fetched, so this acknowledgement and the
+        result card that follows never disagree about what the figure means.
         """
-        lines = [f"📅 **Date:** {date_str}"]
+        mode = mode or CLOSING
+        lines = [f"📅 **Date:** {date_str}",
+                f"🕰️ **Basis:** {'Opening' if mode == OPENING else 'Closing'} balance"]
         if groups:
             lines.append(f"🏢 **Company:** {', '.join(groups)}")
         if names:
@@ -1188,9 +1230,21 @@ class CheckHandler:
                           "text": {"tag": "lark_md", "content": "\n".join(lines)}}],
         }
 
-    def _create_rebuilding_card(self, date_str: str, wallet_count: int) -> dict:
-        """Tell the user we fell back to rebuilding from the blockchain (the slow path)."""
+    def _create_rebuilding_card(self, date_str: str, wallet_count: int, target_date: str) -> dict:
+        """Tell the user we fell back to rebuilding from the blockchain (the slow path).
+
+        Names `target_date` -- the vault date actually being reconstructed and saved --
+        not `date_str`, so the figure that eventually lands can be reconciled against
+        the sheet. For a closing query the two differ (target_date is the day after
+        date_str), so this card says both instead of leaving the reader to guess which
+        day is actually being rebuilt.
+        """
         wallet_word = "wallet" if wallet_count == 1 else "wallets"
+        if target_date == date_str:
+            lead = f"Some balances for {date_str} aren't saved yet"
+        else:
+            lead = (f"Some balances for {date_str}'s closing figure — the vault row "
+                    f"dated {target_date} — aren't saved yet")
         return {
             "config": {
                 "wide_screen_mode": True,
@@ -1208,7 +1262,7 @@ class CheckHandler:
                     "tag": "div",
                     "text": {
                         "tag": "lark_md",
-                        "content": f"🔄 **Some balances for {date_str} aren't saved yet, so I'm "
+                        "content": f"🔄 **{lead}, so I'm "
                                    f"rebuilding {wallet_count} {wallet_word} from blockchain records.**\n\n"
                                    "This is slower than reading a saved record — rebuilding can take "
                                    "up to about four minutes. Any wallet that can't be worked out in time "

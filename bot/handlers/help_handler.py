@@ -78,7 +78,7 @@ class HelpHandler:
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": "• **/start** - Start the bot and check connection\n• **/help** - Show available commands and their descriptions\n• **/list** - Show all configured wallets\n• **/add [company] [wallet name] [address]** - Add a new wallet\n• **/remove [wallet name or address]** - Remove a wallet\n• **/check** - Check all wallet balances\n• **/check [2026-07-15]** - Balances on that date\n• **/check [2026-07-15] [KZP]** - One company on that date\n• **/check [2026-07-15] [KZP 96G1]** - One wallet on that date (typo-tolerant)"
+                                "content": "• **/start** - Start the bot and check connection\n• **/help** - Show available commands and their descriptions\n• **/list** - Show all configured wallets\n• **/add [company] [wallet name] [address]** - Add a new wallet\n• **/remove [wallet name or address]** - Remove a wallet\n• **/check** - Check all wallet balances\n• **/check [2026-07-15]** - balance at the END of that day (closing)\n• **/check [2026-07-15] [o]** - balance at the START of that day (opening)\n• **/check [2026-07-15] [c]** - balance at the end of that day, said explicitly\n• **/check [2026-07-15] [KZDW]** - one group, that day's closing balance\n• **/check [2026-07-15] [o] [KZDW]** - one group, that day's opening balance\n• **/check [2026-07-15] [KZP 96G1]** - one wallet on that date (typo-tolerant)\n\nSpacing does not matter: **[2026-07-15][KZDW]** works the same."
                             }
                         }
                     ]
@@ -179,9 +179,14 @@ class HelpHandler:
 • **/add [company] [wallet name] [address]** - Add a new wallet
 • **/remove [wallet name or address]** - Remove a wallet
 • **/check** - Check all wallet balances
-• **/check [2026-07-15]** - Balances on that date
-• **/check [2026-07-15] [KZP]** - One company on that date
-• **/check [2026-07-15] [KZP 96G1]** - One wallet on that date (typo-tolerant)
+• **/check [2026-07-15]** - balance at the END of that day (closing)
+• **/check [2026-07-15] [o]** - balance at the START of that day (opening)
+• **/check [2026-07-15] [c]** - balance at the end of that day, said explicitly
+• **/check [2026-07-15] [KZDW]** - one group, that day's closing balance
+• **/check [2026-07-15] [o] [KZDW]** - one group, that day's opening balance
+• **/check [2026-07-15] [KZP 96G1]** - one wallet on that date (typo-tolerant)
+
+Spacing does not matter: **[2026-07-15][KZDW]** works the same.
 
 ---
 
