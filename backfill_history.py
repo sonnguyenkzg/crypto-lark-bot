@@ -383,9 +383,23 @@ def main():
                     if derived is not None and abs(derived - saved) > Decimal("0.01"):
                         rebuilt_mismatches.append((name, d, saved, derived))
                     continue
-                if derived is not None and abs(derived - saved) <= Decimal("0.01"):
+                if derived is None:
+                    # The derivation produced NO value (a negative reconstruction) for a
+                    # date we HAVE a scheduled measurement for -- a gross failure, not a
+                    # near-miss, and it must NOT pass silently. For a WRITER it invalidates
+                    # trust in that wallet's gap rows (the derivation is badly wrong on a
+                    # date we can check, so its unverifiable gap rows cannot be trusted):
+                    # block. For a non-writer it is only an informational note on an
+                    # existing, never-touched row.
+                    if wallet_writes:
+                        disagree.append((name, d, saved, None))
+                    else:
+                        unavailable.append((name, f"{d}: derivation gave no value on a "
+                                                  f"measured date", None))
+                    continue
+                if abs(derived - saved) <= Decimal("0.01"):
                     agree += 1
-                elif derived is not None and wallet_writes:
+                elif wallet_writes:
                     # STRICT bar for writers: this scheduled row is ground truth and the
                     # derivation did not reproduce it exactly. Because this wallet writes
                     # gap rows that have no measured row to catch an error, we do NOT try
@@ -394,7 +408,7 @@ def main():
                     # every residual-timing / boundary / offset path in one rule: an offset
                     # that reached the gap rows would necessarily show up here too.
                     disagree.append((name, d, saved, derived))
-                elif derived is not None:
+                else:
                     # Non-writing wallet: this disagreement is only a confidence signal on
                     # a row that already exists and is never touched. The daily report's
                     # row Time is the WRITE instant, not the READ instant, so a transfer in
@@ -440,8 +454,9 @@ def main():
               f"diff={derived-saved:+,.2f}")
     print(f"DISAGREEMENTS   : {len(disagree)}  (unexplained -- blocks the write)")
     for name, d, saved, derived in disagree[:20]:
-        print(f"    {name:<26} {d}  saved={saved:,.2f}  derived={derived:,.2f}  "
-              f"diff={derived-saved:+,.2f}")
+        dv = "None (negative reconstruction)" if derived is None else f"{derived:,.2f}"
+        diff = "n/a" if derived is None else f"{derived - saved:+,.2f}"
+        print(f"    {name:<26} {d}  saved={saved:,.2f}  derived={dv}  diff={diff}")
     print(f"unavailable     : {len(unavailable)}  "
           f"({unfilled_from_unavailable:,} wallet-days left unfilled by skipped wallets)")
     for name, why, extra in unavailable[:20]:
