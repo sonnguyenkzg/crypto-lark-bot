@@ -18,7 +18,8 @@ from typing import Any, Dict, List, Tuple
 from bot.services.wallet_service import WalletService
 from bot.services.balance_service import BalanceService
 from bot.services.chain_detector import detect_chain_from_address, get_chain_emoji, canonical_address
-from bot.services.command_args import resolve_fuzzy, parse_arguments, split_date, is_valid_iso_date, classify_tokens
+from bot.services.command_args import resolve_fuzzy, parse_arguments, split_date, is_valid_iso_date, classify_tokens, extract_mode
+from bot.services.vault_calendar import target_date_for, OPENING, CLOSING
 from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,20 @@ class CheckHandler:
             # leading ISO date if present -> routes to the LIVE path or the historical path.
             tokens, had_bare = parse_arguments(command_args)
             date_str, other = split_date(tokens)
+            # Pull [o]/[c] out before anything treats them as filters. Without this an
+            # [o] would fall through to fuzzy matching and silently return the ten OKKZ
+            # wallets by prefix.
+            mode, other, mode_conflict = extract_mode(other)
+            if mode_conflict:
+                await context.topic_manager.send_command_response(
+                    self._create_mode_conflict_card(), msg_type="interactive")
+                return False
+            if mode and not date_str:
+                # Opening and closing are properties of a DAY, so they are meaningless
+                # for the live check.
+                await context.topic_manager.send_command_response(
+                    self._create_mode_without_date_card(mode), msg_type="interactive")
+                return False
             # A bare (undelimited) token is silently DROPPED by parse_arguments -- it never
             # reaches `tokens`/`other`, so we can flag THAT it happened (had_bare) but not
             # say what it was. For the LIVE (no-date) path this matches pre-Task-8 behaviour
@@ -176,7 +191,7 @@ class CheckHandler:
                     await context.topic_manager.send_command_response(
                         self._create_bracket_hint_card(date_str), msg_type="interactive")
                     return False
-                return await self._handle_historical(context, date_str, other, wallet_data)
+                return await self._handle_historical(context, date_str, other, wallet_data, mode)
 
             # A bare, un-bracketed ISO date (e.g. `/check 2026-07-15`) parses to no tokens
             # and would silently run a full LIVE check -- the user could mistake today's
@@ -293,7 +308,22 @@ class CheckHandler:
             return True                              # unparseable -> safe direction
         return prefix <= date_str
 
-    def classify_wallets(self, roster, snapshot, date_str):
+    def _existed_on(self, first_seen, wallet, date_str):
+        """True if `wallet` existed on/before `date_str`.
+
+        Prefers the derived first_seen map (min of created_at and the earliest vault
+        row); falls back to created_at alone when no map was supplied. An unknown
+        first_seen means no evidence either way -> assume it existed, the safe
+        direction, so a missing figure still surfaces instead of being hidden.
+        """
+        if first_seen is None:
+            return self._existed_by(wallet.get("created_at"), date_str)
+        fs = first_seen.get(canonical_address(wallet.get("address", "")))
+        if not fs:
+            return True
+        return fs <= date_str
+
+    def classify_wallets(self, roster, snapshot, date_str, first_seen=None):
         """Decide, per wallet, what we can show for `date_str`. Pure - no network.
 
         SCOPE: the wallets currently in wallets.json, and only those. A wallet that
@@ -304,6 +334,10 @@ class CheckHandler:
         status: saved            - a figure was recorded that day
                 needs_rebuild    - existed then, no figure recorded -> work it out
                 not_yet_created  - added after this date, so it has no balance
+
+        `first_seen` maps canonical address -> the earliest date the wallet is known to
+        have existed (see vault_calendar.build_first_seen). When omitted, existence
+        falls back to created_at alone, which is the pre-2026-07-31 behaviour.
         """
         out = []
         for w in roster:
@@ -311,7 +345,7 @@ class CheckHandler:
             entry = snapshot.get(key)
             if entry:
                 status, balance = "saved", entry["balance"]
-            elif self._existed_by(w.get("created_at"), date_str):
+            elif self._existed_on(first_seen, w, date_str):
                 status, balance = "needs_rebuild", None
             else:
                 status, balance = "not_yet_created", None
@@ -322,13 +356,18 @@ class CheckHandler:
         return out
 
     async def _handle_historical(self, context: Any, date_str: str, other_tokens: List[str],
-                                  wallet_data: Dict) -> bool:
+                                  wallet_data: Dict, mode: str = None) -> bool:
         """Route for `/check [date] ...`.
 
         Validates the date, classifies the remaining tokens into group/name filters,
         then resolves each wallet INDEPENDENTLY for that date (classify_wallets): already
         saved, rebuilt from chain history and saved back, added after the date, or failed.
         Whatever gets rebuilt is written back, so this date is never fully rebuilt twice.
+
+        `date_str` is the day the USER asked about and is what every card says. The vault
+        is addressed by `target_date`, which for a closing query is the day after -- see
+        vault_calendar.target_date_for. Keep the two apart: date_str for copy, target_date
+        for the sheet read, the classification, the rebuild cutoff and the write-back.
         """
         if not is_valid_iso_date(date_str):
             await context.topic_manager.send_command_response(
@@ -341,29 +380,44 @@ class CheckHandler:
                 self._create_future_date_card(date_str), msg_type="interactive")
             return False
 
+        # Default basis is CLOSING: the balance at the end of the requested day, which is
+        # the same instant as 00:00 GMT+7 the next morning -- i.e. the row dated D+1.
+        mode = mode or CLOSING
+        target_date = target_date_for(date_str, mode)
+        if target_date > gmt7_today:
+            # Only reachable for closing-of-today: the day has not ended, so its closing
+            # figure does not exist yet. Opening does, so point there.
+            await context.topic_manager.send_command_response(
+                self._create_day_not_finished_card(date_str), msg_type="interactive")
+            return False
+
         companies = sorted({info["company"] for info in wallet_data.values()})
         names_all = [info["wallet"] for info in wallet_data.values()]
         groups, names = classify_tokens(other_tokens, companies, names_all)
-
-        # Off the event loop: reading the sheet blocks (and retries), and the bot serves
-        # every other command plus its health check on this single loop.
-        snapshot, _nearest_date, _nearest_snapshot, ok = \
-            await asyncio.to_thread(self.sheets_logger.get_snapshot_and_nearest, date_str)
-
-        # CRITICAL: a failed read must NEVER be treated as "nothing is saved for this
-        # date". That confusion is exactly what caused /check [2026-07-15] to rebuild and
-        # duplicate 68 already-saved wallets after a transient Sheets error. If we can't
-        # read the record, stop here -- no classifying, no rebuilding, no saving.
-        if not ok:
-            await context.topic_manager.send_command_response(
-                self._create_sheet_unavailable_card(date_str), msg_type="interactive")
-            return False
 
         roster = [{"wallet": i["wallet"], "company": i["company"], "address": i["address"],
                    "chain": i.get("chain", "TRC20"), "created_at": i.get("created_at")}
                   for i in wallet_data.values()]
 
-        entries = self.classify_wallets(roster, snapshot, date_str)
+        # Off the event loop: reading the sheet blocks (and retries), and the bot serves
+        # every other command plus its health check on this single loop. One read yields
+        # both the snapshot and first_seen, so existence is judged from the same data.
+        bundle = await asyncio.to_thread(
+            self.sheets_logger.get_history_bundle, target_date, roster)
+
+        # CRITICAL: a failed read must NEVER be treated as "nothing is saved for this
+        # date". That confusion is exactly what caused /check [2026-07-15] to rebuild and
+        # duplicate 68 already-saved wallets after a transient Sheets error. If we can't
+        # read the record, stop here -- no classifying, no rebuilding, no saving.
+        if not bundle["ok"]:
+            await context.topic_manager.send_command_response(
+                self._create_sheet_unavailable_card(date_str), msg_type="interactive")
+            return False
+
+        snapshot = bundle["snapshot"]
+        first_seen = bundle["first_seen"]
+
+        entries = self.classify_wallets(roster, snapshot, target_date, first_seen)
         entries, fuzzy, not_found = self._filter_entries(entries, groups, names)
 
         # Acknowledge immediately (same courtesy as the live /check path): reading the
@@ -382,14 +436,15 @@ class CheckHandler:
                 # be allowed to rebuild everything -- this is NOT the bug being guarded
                 # against above (that was an empty snapshot caused by a READ FAILURE, now
                 # blocked by the `ok` check). Just make it visible in the logs.
-                logger.info(f"Rebuilding ALL {len(todo)} wallets in scope for {date_str} "
+                logger.info(f"Rebuilding ALL {len(todo)} wallets in scope for {target_date} "
                             "(no saved balances found)")
             await context.topic_manager.send_command_response(
                 self._create_rebuilding_card(date_str, len(todo)), msg_type="interactive")
             # Reconstruct at the SAME instant the saved row will claim in its Time column
             # (VAULT_DAY_BOUNDARY). Deriving both from one constant is what stops the
             # label and the computed figure drifting apart.
-            cutoff_ms = int(datetime.strptime(f"{date_str} {VAULT_DAY_BOUNDARY}", "%Y-%m-%d %H:%M:%S")
+            cutoff_ms = int(datetime.strptime(f"{target_date} {VAULT_DAY_BOUNDARY}",
+                                              "%Y-%m-%d %H:%M:%S")
                             .replace(tzinfo=timezone(timedelta(hours=7))).timestamp() * 1000)
             await self._rebuild_entries(todo, cutoff_ms)
 
@@ -400,7 +455,7 @@ class CheckHandler:
         if fresh:
             # Off the event loop: the write retries with backoff for up to ~30s.
             ok, batch = await asyncio.to_thread(
-                self.sheets_logger.save_rebuilt_balances, date_str, [
+                self.sheets_logger.save_rebuilt_balances, target_date, [
                     {"name": e["name"], "company": e["company"],
                      "address": e["address"], "balance": e["balance"]} for e in fresh])
             saved_batch = batch if ok else None
@@ -1028,6 +1083,42 @@ class CheckHandler:
                 }
             ]
         }
+
+    def _simple_notice_card(self, template: str, title: str, body: str) -> dict:
+        """A one-message notice card, matching the existing error cards' shape."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {"template": template,
+                       "title": {"tag": "plain_text", "content": title}},
+            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": body}}],
+        }
+
+    def _create_mode_conflict_card(self) -> dict:
+        """Both an opening and a closing modifier were given."""
+        return self._simple_notice_card(
+            "orange", "⚠️ Choose Opening or Closing",
+            "You asked for both the opening and the closing balance. Please pick one.\n\n"
+            "• **/check [2026-07-15] [o]** — balance at the start of that day\n"
+            "• **/check [2026-07-15] [c]** — balance at the end of that day\n"
+            "• **/check [2026-07-15]** — closing, the default")
+
+    def _create_mode_without_date_card(self, mode: str) -> dict:
+        """A basis modifier with no date. Opening/closing only mean something for a day."""
+        word = "opening" if mode == OPENING else "closing"
+        return self._simple_notice_card(
+            "orange", "⚠️ A Date Is Needed",
+            f"The {word} balance is the balance of a particular day, so please say which day.\n\n"
+            f"• **/check [2026-07-15] [{'o' if mode == OPENING else 'c'}]** — that day's {word} balance\n"
+            "• **/check** — balances right now")
+
+    def _create_day_not_finished_card(self, date_str: str) -> dict:
+        """Closing of today: the day has not ended yet."""
+        return self._simple_notice_card(
+            "orange", "⏳ This Day Has Not Finished",
+            f"**{date_str}** has not ended yet, so it has no closing balance. "
+            "It will have one after midnight GMT+7.\n\n"
+            f"• **/check [{date_str}] [o]** — the balance at the start of today\n"
+            "• **/check** — balances right now")
 
     def _create_bracket_hint_card(self, date_str: str) -> dict:
         """Create hint card for two un-bracketed cases:
