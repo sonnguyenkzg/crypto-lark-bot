@@ -181,21 +181,37 @@ def main():
         if transfers is None:
             # A very high-volume wallet blows through Tronscan's 10,000-per-query cap in
             # one shot. Fall back to chunked windowed fetching, which slices the window
-            # into days (each far under the cap) and is provably complete per chunk.
-            # CRITICAL: fetch to NOW, not to the window end -- balances_by_date subtracts
-            # from the CURRENT balance, so a short end bound understates every date by the
-            # net of the transfers it omits.
-            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+            # into (by default) day-sized pieces, each far under the cap, and is provably
+            # complete per chunk. This path costs minutes instead of seconds, which is why
+            # it is only tried after the fast path has already refused -- the other ~69
+            # wallets never pay for it.
+            #
+            # CRITICAL: end_ms MUST be "now" (int(time.time() * 1000)), NOT the end of the
+            # --start/--end backfill window. balances_by_date() computes
+            # balance_at(D) = current_balance - net(transfers strictly after D), and
+            # `current` (fetched above via get_balance) is the balance AS OF NOW. Fetching
+            # only up to the window end would silently omit every transfer between the
+            # window end and now, understating every single derived date by that same
+            # missing net amount -- a constant offset that still looks plausible row by
+            # row. (Hit exactly this while verifying: passing day_boundary_ms(args.end)
+            # here made every derived value for "KZDW DPP TH 2" too high by +16,032.07,
+            # precisely that wallet's net inflow between --end and now.)
+            now_ms = int(time.time() * 1000)
             transfers = svc.fetch_transfers_between(
-                addr, chain, day_boundary_ms(args.start), now_ms, chunk_days=1)
+                addr, chain, day_boundary_ms(args.start), now_ms,
+                chunk_days=args.chunk_days)
             if transfers is not None:
+                log.info(f"{name}: fast-path transfer fetch unavailable, used chunked "
+                         f"fetch instead ({len(transfers):,} transfers)")
                 print(f"[{n:>3}/{len(roster)}] {name:<28} chunked fetch: "
                       f"{len(transfers):,} transfers")
         if transfers is None:
             missing_days = sum(1 for d in dates if key not in existing.get(d, {}))
             unfilled_from_unavailable += missing_days
-            unavailable.append((name, "transfer history too long to fetch safely", missing_days))
-            print(f"[{n:>3}/{len(roster)}] {name:<28} SKIPPED - transfer history unavailable "
+            unavailable.append((name, "transfer history too long to fetch safely "
+                                      "(even chunked)", missing_days))
+            print(f"[{n:>3}/{len(roster)}] {name:<28} SKIPPED - transfer history "
+                  f"unavailable even with chunked fetch "
                   f"({missing_days} wallet-days left unfilled)")
             continue
 
