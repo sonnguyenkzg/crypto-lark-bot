@@ -54,8 +54,16 @@ def build_first_seen(roster, rows):
          would hide a wallet on a date whose balance is sitting in the sheet.
 
     Taking the minimum keeps created_at as the primary signal while never contradicting
-    recorded evidence. It also gives the guarantee the callers rely on: a wallet holding
-    a row on D necessarily has first_seen <= D, so no saved balance is ever excluded.
+    recorded evidence: a wallet holding a row on D necessarily has first_seen <= D,
+    because first_seen includes that row's own date.
+
+    Note that this inequality is NOT what protects a saved balance from being excluded.
+    Callers apply a STRICT test (first_seen < D), because a row dated D is the balance at
+    D 00:00 GMT+7 and a wallet created during D did not exist at that instant. What
+    actually guarantees a saved balance is always counted is the ORDER in
+    CheckHandler.classify_wallets: it consults the snapshot first and only asks about
+    existence when no row was found. Reversing that order would silently drop a wallet
+    that has a real recorded balance.
 
     Returns None for a wallet with neither signal; callers treat that as "assume it
     existed", which is the safe direction and matches the previous behaviour.
