@@ -84,6 +84,55 @@ def test_classify_still_works_without_a_first_seen_map():
     assert out[0]["status"] == "not_yet_created"
 
 
+# --- the existence boundary: a row dated D is the balance at 00:00 GMT+7 on D ---
+
+def test_a_wallet_created_during_D_is_not_expected_to_have_a_figure_for_D():
+    """THE boundary. A wallet created at any time during D did not exist at 00:00 GMT+7
+    on D, which is the only instant a row dated D describes. Reporting it as missing
+    made the bot reconstruct and SAVE a balance for a moment when nobody was monitoring
+    the wallet -- 40 wallet-days across 18 dates in the live record. Its first real
+    figure is the row dated D+1, which is where its first saved row already sits."""
+    h = CheckHandler()
+    roster = [{"wallet": "KZDW FIN OPS TRC 1", "address": "TAAA", "company": "KZDW",
+               "created_at": "2026-07-16"}]
+    out = h.classify_wallets(roster, {}, "2026-07-16", {"TAAA": "2026-07-16"})
+    assert out[0]["status"] == "not_yet_created"
+
+
+def test_a_wallet_created_the_day_before_D_is_expected_to_have_a_figure_for_D():
+    """The other side of the same boundary: it was there through all of D's 00:00."""
+    h = CheckHandler()
+    roster = [{"wallet": "W1", "address": "TAAA", "company": "CO", "created_at": "2026-07-15"}]
+    out = h.classify_wallets(roster, {}, "2026-07-16", {"TAAA": "2026-07-15"})
+    assert out[0]["status"] == "needs_rebuild"
+
+
+def test_a_saved_row_still_wins_when_first_seen_equals_the_date():
+    """The guarantee, at the exact point a careless `<` would do real damage.
+
+    first_seen == D says "did not exist at D's 00:00", but a row for D is sitting right
+    there. A saved figure is evidence and must always beat a judgement about existence,
+    so this must classify as `saved` and keep its balance -- never `not_yet_created`,
+    which would silently drop a real recorded figure out of the reported total."""
+    h = CheckHandler()
+    roster = [{"wallet": "W1", "address": "TAAA", "company": "CO", "created_at": "2026-07-16"}]
+    snapshot = {"TAAA": {"wallet_name": "W1", "company": "CO", "address": "TAAA",
+                         "balance": 1234, "batch_id": "b", "time": "00:00:00"}}
+    out = h.classify_wallets(roster, snapshot, "2026-07-16", {"TAAA": "2026-07-16"})
+    assert out[0]["status"] == "saved"
+    assert out[0]["balance"] == 1234
+
+
+def test_the_legacy_created_at_fallback_uses_the_same_boundary():
+    """No first_seen map -> created_at alone, but the same reasoning must apply, or the
+    two paths disagree about the same wallet on the same day."""
+    h = CheckHandler()
+    roster = [{"wallet": "W1", "address": "TAAA", "company": "CO",
+               "created_at": "2026-07-16 15:15:55"}]
+    assert h.classify_wallets(roster, {}, "2026-07-16")[0]["status"] == "not_yet_created"
+    assert h.classify_wallets(roster, {}, "2026-07-17")[0]["status"] == "needs_rebuild"
+
+
 # --- guards ---
 
 def test_modifier_without_a_date_is_rejected():
@@ -171,10 +220,14 @@ def test_wallet_added_on_dplus1_needs_rebuild_for_closing_of_d():
     that one call leaves the rest of the suite green, so this test exists solely to
     catch the revert.
 
-    A wallet whose first_seen is D+1 (added that day; no vault row for D yet) must
-    classify as needs_rebuild for closing-of-D, because closing-of-D reads the vault
-    row dated D+1, where the wallet DOES exist. Addressed by date_str (D) instead, the
-    same wallet reads as not_yet_created and silently vanishes from the report.
+    A wallet first seen on D itself did not exist at D's own 00:00 GMT+7 boundary, but
+    it certainly existed by D+1's. Closing-of-D reads the row dated D+1, so the wallet
+    must classify as needs_rebuild. Addressed by date_str (D) instead, the same wallet
+    reads as not_yet_created and silently vanishes from the report.
+
+    That straddle is deliberate: the fixture sits exactly one day either side of the
+    strict existence boundary, so this test fails if the handler passes the wrong date
+    AND stays honest about which date it is really exercising.
     """
     h = CheckHandler()
     h.wallet_service.list_wallets = lambda: (True, {"companies": {
@@ -182,7 +235,7 @@ def test_wallet_added_on_dplus1_needs_rebuild_for_closing_of_d():
 
     def fake_bundle(date_str, roster=None):
         return {"ok": True, "snapshot": {}, "nearest_date": None,
-                "nearest_snapshot": {}, "first_seen": {"TAAA": "2026-07-16"}}
+                "nearest_snapshot": {}, "first_seen": {"TAAA": "2026-07-15"}}
 
     with patch.object(h.sheets_logger, "get_history_bundle", side_effect=fake_bundle), \
             patch.object(CheckHandler, "_rebuild_entries", return_value=None):
