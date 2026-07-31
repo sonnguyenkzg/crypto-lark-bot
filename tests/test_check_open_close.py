@@ -140,7 +140,12 @@ def test_target_date_passed_to_the_pipeline(args, expected_target):
         return {"ok": True, "snapshot": {}, "nearest_date": None,
                 "nearest_snapshot": {}, "first_seen": {}}
 
-    with patch.object(h.sheets_logger, "get_history_bundle", side_effect=fake_bundle):
+    # An empty snapshot marks every real wallet in wallets.json "needs_rebuild", so
+    # without this second patch the handler would issue a live provider request per
+    # wallet. A unit test must never reach the network: on a machine holding working
+    # API keys that would hammer a live provider and could write to the sheet.
+    with patch.object(h.sheets_logger, "get_history_bundle", side_effect=fake_bundle), \
+            patch.object(CheckHandler, "_rebuild_entries", return_value=None):
         run(h, args)
     assert seen["date"] == expected_target
 

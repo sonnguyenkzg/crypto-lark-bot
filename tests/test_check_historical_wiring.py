@@ -7,6 +7,8 @@ import asyncio
 import json
 from decimal import Decimal
 
+import pytest
+
 from bot.handlers.check_handler import CheckHandler
 
 
@@ -32,6 +34,22 @@ ROSTER = {"companies": {
 }}
 
 
+def _bundle(snapshot=None, nearest_date=None, nearest_snapshot=None, ok=True, first_seen=None):
+    """Build the five-key dict get_history_bundle returns.
+
+    The handler reads the sheet through get_history_bundle (Task 4 made one read yield
+    both the snapshot and first_seen; get_snapshot_and_nearest is now only a thin
+    4-tuple view OVER it, so stubbing that view cannot influence the handler).
+
+    first_seen defaults to {} -- an empty map means "no evidence either way", which
+    classify_wallets treats as "assume the wallet existed". That is exactly what the
+    created_at-only rule did for every wallet in ROSTER (created 2026-01-01, well before
+    any date under test), so these doubles classify identically to before the refactor.
+    """
+    return {"ok": ok, "snapshot": snapshot or {}, "nearest_date": nearest_date,
+            "nearest_snapshot": nearest_snapshot or {}, "first_seen": first_seen or {}}
+
+
 def _handler(monkeysnapshot=None, monkeybalances=None, nearest=None):
     """nearest = (date_str, snapshot_dict) used when monkeysnapshot is empty (gap date)."""
     h = CheckHandler()
@@ -39,9 +57,9 @@ def _handler(monkeysnapshot=None, monkeybalances=None, nearest=None):
     if monkeysnapshot is not None:
         near_date, near_snap = nearest if nearest else (None, {})
         h.sheets_logger.get_snapshot_for_date = lambda d: monkeysnapshot
-        h.sheets_logger.get_snapshot_and_nearest = (
-            lambda d: (monkeysnapshot, None, {}, True) if monkeysnapshot
-            else ({}, near_date, near_snap, True))
+        h.sheets_logger.get_history_bundle = (
+            lambda d, roster=None: _bundle(snapshot=monkeysnapshot) if monkeysnapshot
+            else _bundle(nearest_date=near_date, nearest_snapshot=near_snap))
     if monkeybalances is not None:
         h.balance_service.get_balance_at = (
             lambda addr, chain, cutoff, deadline=None: monkeybalances.get(addr))
@@ -151,7 +169,7 @@ def test_reconstruction_timeout_marks_unavailable_not_dropped():
 def test_unrebuildable_wallet_reported_failed_not_borrowed_from_nearest():
     """A wallet that can't be rebuilt must still surface by name -- but the per-wallet
     redesign (Task 5) no longer borrows a number from the nearest saved date (that
-    fallback is gone; get_snapshot_and_nearest's nearest_date/nearest_snapshot are now
+    fallback is gone; the bundle's nearest_date/nearest_snapshot are now
     discarded). It's honestly reported as failed and excluded from the total; a LATER
     check will retry the rebuild, since the date is still incomplete."""
     nearest_snap = {
@@ -182,30 +200,50 @@ def test_no_nearest_record_still_reports_wallet_as_unavailable():
     assert "KZP 96G1" in blob
 
 
-def test_only_missing_wallets_are_rebuilt_and_saved():
+@pytest.mark.parametrize("args,expected_save_date", [
+    (["[2026-07-20]", "[o]"], "2026-07-20"),   # opening of the 20th IS the row dated the 20th
+    (["[2026-07-20]"],        "2026-07-21"),   # default is closing: the end of the 20th is
+                                               # 00:00 GMT+7 on the 21st, so the row dated 21st
+])
+def test_only_missing_wallets_are_rebuilt_and_saved(args, expected_save_date):
     """A wallet with a saved figure must not be rebuilt; the missing one is
-    rebuilt AND written back so the date fills itself in."""
+    rebuilt AND written back so the date fills itself in.
+
+    Parametrised over both bases because a one-day error in the translation would write
+    a real balance onto the WRONG date in the finance record -- silently, and in a way
+    that looks entirely plausible afterwards. The save date and the reconstruction cutoff
+    are the two places that error would land, so both are pinned here.
+    """
+    from datetime import datetime, timezone, timedelta
     saved = {"TAAA": {"wallet_name": "KZP 96G1", "company": "KZP", "address": "TAAA",
                       "balance": Decimal("19.41"), "batch_id": "20260720000112",
                       "time": "00:01:12"}}
-    rebuilt_for, saved_rows = [], {}
+    rebuilt_for, rebuilt_cutoffs, saved_rows = [], [], {}
     h = CheckHandler()
     h.wallet_service.list_wallets = lambda: (True, ROSTER)
-    h.sheets_logger.get_snapshot_and_nearest = lambda d: (saved, None, {}, True)
+    h.sheets_logger.get_history_bundle = lambda d, roster=None: _bundle(snapshot=saved)
 
     def fake_rebuild(addr, chain, cutoff, deadline=None):
         rebuilt_for.append(addr)
+        rebuilt_cutoffs.append(cutoff)
         return Decimal("10.00")
     h.balance_service.get_balance_at = fake_rebuild
     h.sheets_logger.save_rebuilt_balances = (
         lambda date_str, rows: saved_rows.update(date=date_str, rows=rows) or (True, "B123"))
 
-    blob = _blob(_run(h, ["[2026-07-20]"])[-1])
+    blob = _blob(_run(h, args)[-1])
     assert rebuilt_for == ["0xabc0000000000000000000000000000000000001"]  # ONLY the missing one
     assert [r["name"] for r in saved_rows["rows"]] == ["Eth One"]
-    assert saved_rows["date"] == "2026-07-20"
+    assert saved_rows["date"] == expected_save_date
     assert "29.41" in blob                       # 19.41 saved + 10.00 rebuilt
     assert "B123" in blob                        # batch id shown on the card
+
+    # The figure must be reconstructed at the instant the row it is written to claims,
+    # or the label and the number drift apart by a day.
+    expected_cutoff = int(
+        datetime.strptime(f"{expected_save_date} 00:00:00", "%Y-%m-%d %H:%M:%S")
+        .replace(tzinfo=timezone(timedelta(hours=7))).timestamp() * 1000)
+    assert rebuilt_cutoffs == [expected_cutoff]
 
 
 def test_slow_sheets_read_does_not_freeze_the_event_loop():
@@ -216,12 +254,12 @@ def test_slow_sheets_read_does_not_freeze_the_event_loop():
     snapshot = {"TAAA": {"wallet_name": "KZP 96G1", "company": "KZP", "address": "TAAA",
                          "balance": Decimal("10.00"), "batch_id": "b", "time": "t"}}
 
-    def slow_read(date_str):
+    def slow_read(date_str, roster=None):
         time.sleep(0.4)                        # blocking, like the real Sheets client
-        return (snapshot, None, {}, True)
+        return _bundle(snapshot=snapshot)
 
     h = _handler()
-    h.sheets_logger.get_snapshot_and_nearest = slow_read
+    h.sheets_logger.get_history_bundle = slow_read
     # keep the test off the network: the one unsaved wallet just reports unavailable
     h.balance_service.get_balance_at = lambda addr, chain, cutoff, deadline=None: None
 
@@ -301,7 +339,7 @@ def test_read_failure_sends_unavailable_card_and_triggers_zero_writes():
     fully saved rebuilt every wallet from the blockchain and wrote duplicate rows,
     because a read failure (ok=False) was silently treated as "nothing is saved".
 
-    With the fix, get_snapshot_and_nearest reporting ok=False must make the handler
+    With the fix, get_history_bundle reporting ok=False must make the handler
     stop immediately: no classification, no rebuild, no save. Both get_balance_at
     (rebuild) and save_rebuilt_balances (write) are spied and must NEVER be called.
     """
@@ -309,7 +347,7 @@ def test_read_failure_sends_unavailable_card_and_triggers_zero_writes():
     save_calls = []
     h = CheckHandler()
     h.wallet_service.list_wallets = lambda: (True, ROSTER)
-    h.sheets_logger.get_snapshot_and_nearest = lambda d: ({}, None, {}, False)  # read failed
+    h.sheets_logger.get_history_bundle = lambda d, roster=None: _bundle(ok=False)  # read failed
 
     def spy_get_balance_at(addr, chain, cutoff, deadline=None):
         balance_calls.append(addr)
@@ -343,7 +381,7 @@ def test_nothing_saved_when_nothing_was_rebuilt():
     calls = []
     h = CheckHandler()
     h.wallet_service.list_wallets = lambda: (True, ROSTER)
-    h.sheets_logger.get_snapshot_and_nearest = lambda d: (saved, None, {}, True)
+    h.sheets_logger.get_history_bundle = lambda d, roster=None: _bundle(snapshot=saved)
     h.sheets_logger.save_rebuilt_balances = lambda d, r: calls.append(r) or (True, "X")
     blob = _blob(_run(h, ["[2026-07-20]"])[-1])
     assert calls == []                           # nothing to save -> no write
