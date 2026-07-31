@@ -381,14 +381,19 @@ def main():
                 for t in transfers)
             if not window_touches_wallet:
                 wallet_agrees_clean = True     # empty-window exact agreement => no offset
-        if wallet_writes and wallet_scheduled == 0:
-            # A writer with no scheduled row cannot be validated at all: nothing catches a
-            # bad derivation. Refuse rather than write unvalidated gap rows.
+        if wallet_writes and not wallet_agrees_clean:
+            # A writer must have at least ONE clean (empty-window) exact agreement, which
+            # is the only thing that proves current_at_T carries no constant offset. Without
+            # it the wallet cannot be trusted, even if EVERY one of its scheduled rows
+            # agrees: those agreements could all be "dirty" -- a constant offset X hidden by
+            # each row's own read->write jitter happening to net X -- and its gap rows would
+            # silently carry X. (This subsumes the "no scheduled row at all" case: such a
+            # wallet has no clean agreement either.) Withhold its gaps and abort.
             n_gap = sum(1 for d in dates
                         if existing.get(d, {}).get(key) is None and series[d] is not None)
             unverifiable_writers.append((name, n_gap))
-            print(f"[{n:>3}/{len(roster)}] {name:<28} SKIPPED - writes rows but has no "
-                  f"scheduled measured row to validate against")
+            print(f"[{n:>3}/{len(roster)}] {name:<28} SKIPPED - no clean (empty-window) "
+                  f"exact agreement to prove the derivation has no offset")
             continue
 
         gaps = 0
