@@ -257,6 +257,17 @@ def main():
                   f"({missing_days} wallet-days left unfilled)")
             continue
 
+        # Bound the derivation window to T. The chunked fallback already ends exactly at T,
+        # but the fast path (_fetch_transfers_after) fetches to its OWN internal "now",
+        # which is strictly after T, so it can include transfers in (T, now]. Those belong
+        # ONLY in the tail correction below (current_at_T = b2 - tail_net). Left in the
+        # derivation list they would be subtracted a SECOND time inside balances_by_date --
+        # they fall after every gap date, so net(after D) would include them even though
+        # current_at_T already excludes them -- offsetting every derived date by their net
+        # and writing wrong gap rows with no measured row to catch it. Filter to (start, T]
+        # (tail is strictly ts > T, so a transfer exactly at T stays here, never double).
+        transfers = [t for t in transfers if int(t["ts"]) <= T]
+
         # b2: the balance, read AFTER the (possibly slow) transfer fetch above -- never
         # before it. Reading it first and reusing that value would reopen exactly the
         # race this whole block exists to close.
