@@ -391,6 +391,8 @@ class BalanceService:
                             "from": t.get("from_address", ""), "to": t.get("to_address", ""),
                             "amount": Decimal(t.get("quant", "0")) / Decimal(1_000_000),
                             "success": t.get("finalResult") == "SUCCESS" and t.get("contractRet") == "SUCCESS",
+                            # Tronscan already reports milliseconds.
+                            "ts": int(t.get("block_ts", 0)),
                         })
                     if len(ts) < 50:
                         break
@@ -445,7 +447,10 @@ class BalanceService:
                             break
                         out.append({"from": t.get("from", ""), "to": t.get("to", ""),
                                     "amount": Decimal(t.get("value", "0")) / Decimal(1_000_000),
-                                    "success": True})
+                                    "success": True,
+                                    # Etherscan reports SECONDS -- convert to milliseconds so both
+                                    # chains speak the same unit.
+                                    "ts": int(t["timeStamp"]) * 1000})
                     if stop or len(txs) < 100:
                         break
                     page += 1
