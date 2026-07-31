@@ -663,11 +663,21 @@ class BalanceService:
                         logger.warning(f"TRC20 transfers unavailable after retries for {address[:10]}...")
                         return None
                     payload = r.json()
-                    if not isinstance(payload, dict) or "token_transfers" not in payload:
+                    # Require a real list. `payload.get(...) or []` would read a
+                    # malformed-but-present "token_transfers": null as an exhausted EMPTY
+                    # page -- indistinguishable from a genuine last page -- and break out of
+                    # pagination early, silently DROPPING every transfer on the pages after
+                    # it. A dropped mid-window transfer offsets the reconstructed balance
+                    # for every date before it, and for a backfilled pre-monitoring gap
+                    # date there is no measured row to catch it. Treat anything but a list
+                    # as a hard failure -> the wallet is reported unavailable, never
+                    # silently truncated. Matches the strict chunked-path helper.
+                    if not isinstance(payload, dict) or not isinstance(
+                            payload.get("token_transfers"), list):
                         logger.error(f"Tronscan returned an unexpected body for {address[:10]}...: "
                                      f"{str(payload)[:120]!r}")
                         return None
-                    ts = payload.get("token_transfers") or []
+                    ts = payload["token_transfers"]
                     pages += 1
                     for t in ts:
                         # block_ts must be a real millisecond timestamp. A missing/null/
