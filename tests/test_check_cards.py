@@ -25,7 +25,7 @@ def test_summary_counts_only_wallets_with_a_figure():
 def test_added_later_is_listed_but_not_counted():
     b = blob(H._create_historical_card(ENTRIES, "2026-07-15", {}, [], None))
     assert "New Wallet" in b
-    assert "added after this date" in b
+    assert "added on or after this date" in b
 
 def test_summary_opens_with_the_monitoring_total():
     # A `removed_but_saved` status/note can no longer occur -- scope is wallets.json only,

@@ -1010,9 +1010,9 @@ class CheckHandler:
             # every one buries the actual result under a wall of names nobody reads.
             if len(later) <= 5:
                 later_names = ", ".join(f"**{e['name']}**" for e in later)
-                lines.append(f"• {later_names} — added after this date, so no balance yet")
+                lines.append(f"• {later_names} — added on or after this date, so no balance yet")
             else:
-                lines.append(f"• **{len(later)} wallets** were added after this date, "
+                lines.append(f"• **{len(later)} wallets** were added on or after this date, "
                              "so they have no balance yet")
         if failed:
             lines.append(f"• {names(failed)} — could not be calculated, so not counted")
