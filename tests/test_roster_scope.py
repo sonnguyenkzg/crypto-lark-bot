@@ -53,3 +53,51 @@ def test_created_at_is_no_longer_consulted():
     a = h.classify_wallets([w("A", "TAAA", "2099-01-01")], {}, "2026-01-01")
     b = h.classify_wallets([w("A", "TAAA", None)], {}, "2026-01-01")
     assert a[0]["status"] == b[0]["status"] == "needs_rebuild"
+
+
+# --- card behaviour: every wallet counted, nothing hidden ---
+
+import json
+
+
+def _card_entries(saved=2, rebuilt=1, failed=0):
+    out = [{"name": f"S{i}", "company": "CO", "address": f"TS{i}", "chain": "TRC20",
+            "status": "saved", "balance": 100} for i in range(saved)]
+    out += [{"name": f"R{i}", "company": "CO", "address": f"TR{i}", "chain": "TRC20",
+             "status": "rebuilt", "balance": 0} for i in range(rebuilt)]
+    out += [{"name": f"U{i}", "company": "CO", "address": f"TU{i}", "chain": "TRC20",
+             "status": "failed", "balance": None} for i in range(failed)]
+    return out
+
+
+def _card(entries, roster_total):
+    return json.dumps(CheckHandler()._create_historical_card(
+        entries, "2026-05-17", [], [], None,
+        mode="closing", target_date="2026-05-18", roster_total=roster_total)).replace("**", "")
+
+
+def test_card_no_longer_says_added_after_this_date():
+    b = _card(_card_entries(), roster_total=3)
+    assert "added on or after" not in b
+    assert "added after" not in b
+    assert "no balance yet" not in b
+
+
+def test_a_zero_balance_wallet_is_listed_not_hidden():
+    """A zero is a real balance. Hiding it breaks the reconciliation to the roster size."""
+    b = _card(_card_entries(2, 1), roster_total=3)
+    assert "R0" in b, "the rebuilt 0.00 wallet must appear in the card"
+
+
+def test_summary_counts_the_full_roster():
+    b = _card(_card_entries(68, 3), roster_total=71)
+    assert "Total wallets in monitoring: 71" in b
+
+
+def test_an_unavailable_wallet_is_named_and_not_silently_counted():
+    """A failed reconstruction must be named and excluded from the counted total,
+    never quietly counted as zero."""
+    b = _card(_card_entries(68, 2, failed=1), roster_total=71)
+    assert "U0" in b, "the unavailable wallet must be named"
+    assert "could not be calculated" in b
+    assert "Total wallets in monitoring: 71" in b
