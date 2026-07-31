@@ -327,40 +327,60 @@ def main():
         series = balances_by_date(current_at_T, transfers, addr, dates)
 
         # Per-wallet facts that decide how strictly its disagreements are judged:
-        #   wallet_writes      - does it contribute any gap row (no existing row + a usable
-        #                        derived value)?
-        #   wallet_scheduled   - how many SCHEDULED (measured, non-rebuilt) rows does it
-        #                        have to validate against?
-        #   wallet_agrees_any  - does its derivation reproduce at least one scheduled row
-        #                        EXACTLY (within 0.01)?
+        #   wallet_writes       - does it contribute any gap row (no existing row + a usable
+        #                         derived value)?
+        #   wallet_scheduled    - how many SCHEDULED (measured, non-rebuilt) rows does it
+        #                         have to validate against?
+        #   wallet_agrees_clean - does its derivation reproduce EXACTLY (within 0.01) at
+        #                         least one scheduled row whose read->write window is EMPTY
+        #                         (no transfer touching this wallet between 00:00 and the
+        #                         row's stamped Time)?
         #
-        # The safety of a writer's gap rows rests on `wallet_agrees_any`. A single exact
-        # agreement pins current_at_T to a correct value: if the derivation were off by any
-        # CONSTANT amount (the failure mode of every fetch/tail/boundary race), EVERY date
-        # -- including that scheduled row -- would be off by it, so it could not agree
-        # anywhere. So an exact agreement PROVES there is no constant offset, and the
-        # remaining disagreements can only be genuine per-date measurement jitter (a
-        # transfer in the daily report's read->write gap). Given that, the prefix-walk
-        # read-instant inference is safe for a writer too: with no constant offset to hide,
-        # it cannot mask a wrong balance. A writer that agrees NOWHERE gets the strict,
-        # zero-degree-of-freedom full-window check only. This is what makes it safe to
-        # backfill a wallet that has a few jitter rows without withholding its (correct)
-        # gap rows. (The residual -- completeness of pre-join transfers a scheduled row
-        # cannot reach -- is the inherent limit of reconstructing never-measured history,
-        # mitigated by the fail-safe complete fetch.)
+        # The safety of a writer's gap rows rests on wallet_agrees_clean. current_at_T is
+        # the only free quantity shared by every derived date; the failure mode of every
+        # fetch/tail/boundary race is a CONSTANT offset X in it, shifting every date equally.
+        # A plain exact agreement does NOT rule that out: a row can agree by COINCIDENCE if
+        # X happens to equal that row's own read->write jitter (its window transfer net), so
+        # the offset cancels on that one row while still corrupting the gap rows. But a row
+        # whose window is EMPTY has zero jitter -- nothing for X to cancel against -- so if
+        # it agrees exactly, X must be 0. That is a genuine proof that current_at_T is
+        # correct, which makes every other date correct (given the fail-safe complete fetch)
+        # and reduces the remaining disagreements to real per-date jitter the prefix-walk
+        # may explain. A writer with no such clean agreement gets the strict, zero-degree-
+        # of-freedom full-window check only. (Residual: pre-join transfer completeness a
+        # scheduled row cannot reach -- the inherent limit of reconstructing never-measured
+        # history, mitigated by the fail-safe complete fetch.)
         wallet_writes = any(existing.get(d, {}).get(key) is None and series[d] is not None
                             for d in dates)
         wallet_scheduled = 0
-        wallet_agrees_any = False
+        wallet_agrees_clean = False
         for d in dates:
             snap_d = existing.get(d, {}).get(key)
-            if snap_d is not None:
-                rr = row_index.get((d, snap_d["batch_id"], key))
-                if rr and len(rr) > 7 and rr[7] == "scheduled":
-                    wallet_scheduled += 1
-                    dv = series[d]
-                    if dv is not None and abs(dv - snap_d["balance"]) <= Decimal("0.01"):
-                        wallet_agrees_any = True
+            if snap_d is None:
+                continue
+            rr = row_index.get((d, snap_d["batch_id"], key))
+            if not (rr and len(rr) > 7 and rr[7] == "scheduled"):
+                continue
+            wallet_scheduled += 1
+            dv = series[d]
+            if dv is None or abs(dv - snap_d["balance"]) > Decimal("0.01"):
+                continue                      # not an exact agreement
+            if wallet_agrees_clean:
+                continue                      # already have one clean agreement
+            time_str = snap_d.get("time") or "00:00:00"
+            try:
+                end_ms = int(datetime.strptime(f"{d} {time_str}", "%Y-%m-%d %H:%M:%S")
+                             .replace(tzinfo=GMT7).timestamp() * 1000)
+            except ValueError:
+                continue
+            lo_ms = day_boundary_ms(d)
+            window_touches_wallet = any(
+                t.get("success", True) and lo_ms < int(t["ts"]) <= end_ms
+                and (canonical_address(t.get("to", "")) == key
+                     or canonical_address(t.get("from", "")) == key)
+                for t in transfers)
+            if not window_touches_wallet:
+                wallet_agrees_clean = True     # empty-window exact agreement => no offset
         if wallet_writes and wallet_scheduled == 0:
             # A writer with no scheduled row cannot be validated at all: nothing catches a
             # bad derivation. Refuse rather than write unvalidated gap rows.
@@ -423,14 +443,15 @@ def main():
                     # allow_partial is the prefix-walk's one degree of freedom. Grant it to:
                     #   - non-writing wallets: a false explain touches only an existing,
                     #     never-written row, so it can corrupt no data; and
-                    #   - writing wallets that agree EXACTLY somewhere (wallet_agrees_any):
-                    #     that agreement proves current_at_T has no constant offset, so there
-                    #     is no wrong balance for the freedom to mask -- the disagreements can
-                    #     only be per-date jitter, and the gap rows (derived from the pinned,
+                    #   - writing wallets with a CLEAN exact agreement (wallet_agrees_clean:
+                    #     an exact match on a scheduled row whose read->write window is empty):
+                    #     that proves current_at_T has no constant offset, so there is no
+                    #     wrong balance for the freedom to mask -- the disagreements can only
+                    #     be per-date jitter, and the gap rows (derived from the pinned,
                     #     correct current_at_T) are sound.
-                    # A writer that agrees NOWHERE gets the strict, zero-freedom full-window
-                    # check only; if that cannot explain it, the run aborts.
-                    allow = (not wallet_writes) or wallet_agrees_any
+                    # A writer without a clean agreement gets the strict, zero-freedom
+                    # full-window check only; if that cannot explain it, the run aborts.
+                    allow = (not wallet_writes) or wallet_agrees_clean
                     time_str = snap.get("time") or "00:00:00"
                     ok_expl, window_net, fetch_ms = disagreement_explained(
                         transfers, addr, d, time_str, saved, derived, allow_partial=allow)
