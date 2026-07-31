@@ -55,24 +55,12 @@ def daterange(start, end):
     return out
 
 
-def net_transfers_in_window(transfers, address, date_str, time_str):
-    """Signed net of `address`'s successful transfers strictly after 00:00:00 GMT+7 on
-    date_str, up to and including `time_str` that same day (the instant the sheet row
-    was actually measured -- the daily report does not land at exactly 00:00:00, it
-    lands 00:00:31..00:01:35 GMT+7). Same signed-delta convention as balances_by_date:
-    +amount received, -amount sent.
+JITTER_GRACE_S = 5   # read->write gap: the row's Time is WRITE-time; the balance was
+                     # read up to a few seconds earlier (API call, then datetime.now()).
 
-    balance_at(00:00:00) = balance_at(time_str) - net(transfers in (00:00:00, time_str]),
-    because any transfer in that window already happened by the time the snapshot was
-    taken but had not yet happened at the true day boundary.
-    """
-    me = canonical_address(address)
-    start = day_boundary_ms(date_str)
-    try:
-        end = int(datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
-                  .replace(tzinfo=GMT7).timestamp() * 1000)
-    except ValueError:
-        return Decimal(0)   # malformed/missing time -> no window to explain anything with
+
+def _net_up_to(transfers, me, start, end):
+    """Signed net of successful transfers in (start, end]. +received, -sent."""
     net = Decimal(0)
     for t in transfers or []:
         if not t.get("success", True):
@@ -86,6 +74,45 @@ def net_transfers_in_window(transfers, address, date_str, time_str):
         if canonical_address(t.get("from", "")) == me:
             net -= amount
     return net
+
+
+def disagreement_explained(transfers, address, date_str, time_str, saved, derived):
+    """Is a derived-vs-measured disagreement fully explained by the measurement's
+    read->write timing, rather than a real error?
+
+    The daily report does not land at exactly 00:00:00 GMT+7 -- it lands
+    00:00:31..00:01:35 -- and its row Time is the WRITE instant, while the balance was
+    READ up to a few seconds earlier. A transfer in that read->write gap sits in the
+    measured row but not in a derivation anchored at the true 00:00:00 boundary (or the
+    reverse). So the effective read instant is somewhere in [Time - JITTER_GRACE_S, Time].
+
+    We try every plausible read instant (the stamped Time, and just-before each transfer
+    in that grace window) and return the first whose window net reconciles `derived` and
+    `saved` to the cent: derived == saved - net(00:00:00, read_instant].
+
+    The MONEY tolerance stays 0.01 -- only the boundary SECOND is fuzzy, never the
+    amount. A genuine derivation error (wrong by an amount that does not correspond to a
+    transfer within a few seconds of the row's Time) is NOT explained by this and still
+    blocks the write. Returns (explained, net, effective_time_ms).
+    """
+    me = canonical_address(address)
+    start = day_boundary_ms(date_str)
+    try:
+        end = int(datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+                  .replace(tzinfo=GMT7).timestamp() * 1000)
+    except ValueError:
+        return (False, None, None)     # malformed time -> nothing to explain it with
+    lo = end - JITTER_GRACE_S * 1000
+    candidates = {end}
+    for t in transfers or []:
+        ts = int(t["ts"])
+        if lo < ts <= end:
+            candidates.add(ts - 1)      # a read that landed just before this transfer
+    for c in sorted(candidates, reverse=True):
+        net = _net_up_to(transfers, me, start, c)
+        if abs(Decimal(derived) - (Decimal(saved) - net)) <= Decimal("0.01"):
+            return (True, net, c)
+    return (False, None, None)
 
 
 def main():
@@ -255,9 +282,9 @@ def main():
                     # tolerance, which would hide real errors instead of this one
                     # known, understood effect.
                     time_str = snap.get("time") or "00:00:00"
-                    window_net = net_transfers_in_window(transfers, addr, d, time_str)
-                    expected_derived = saved - window_net
-                    if abs(derived - expected_derived) <= Decimal("0.01"):
+                    ok_expl, window_net, _eff = disagreement_explained(
+                        transfers, addr, d, time_str, saved, derived)
+                    if ok_expl:
                         explained.append((name, d, saved, derived, time_str, window_net))
                     else:
                         disagree.append((name, d, saved, derived))
