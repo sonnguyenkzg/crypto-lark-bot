@@ -1085,14 +1085,20 @@ def _entries(n_saved=2, n_later=0):
     return out
 
 
-def test_card_states_the_basis():
+def _header(card):
+    return card["header"]["title"]["content"]
+
+
+def test_card_header_states_the_basis():
     h = CheckHandler()
-    closing = blob([h._create_historical_card(_entries(), "2026-07-15", [], [], None,
-                                              "closing", "2026-07-16")])
-    opening = blob([h._create_historical_card(_entries(), "2026-07-15", [], [], None,
-                                              "opening", "2026-07-15")])
-    assert "losing" in closing and "pening" not in closing.replace("opening balance", "")
-    assert "pening" in opening
+    closing = h._create_historical_card(_entries(), "2026-07-15", [], [], None,
+                                        "closing", "2026-07-16")
+    opening = h._create_historical_card(_entries(), "2026-07-15", [], [], None,
+                                        "opening", "2026-07-15")
+    assert "Closing" in _header(closing)
+    assert "Opening" in _header(opening)
+    assert "Opening" not in _header(closing)
+    assert "Closing" not in _header(opening)
 
 
 def test_closing_card_names_the_date_it_read():
@@ -1100,14 +1106,18 @@ def test_closing_card_names_the_date_it_read():
     h = CheckHandler()
     b = blob([h._create_historical_card(_entries(), "2026-07-15", [], [], None,
                                         "closing", "2026-07-16")])
-    assert "2026-07-15" in b and "2026-07-16" in b
+    assert "2026-07-15" in b, "the day the user asked about"
+    assert "2026-07-16" in b, "the vault date the figure came from"
 
 
-def test_opening_card_does_not_repeat_the_date_pointlessly():
+def test_opening_card_does_not_mention_a_second_date():
+    """For an opening query the target IS the requested date, so there is no second
+    date to explain. Mentioning 2026-07-16 there would be nonsense."""
     h = CheckHandler()
     b = blob([h._create_historical_card(_entries(), "2026-07-15", [], [], None,
                                         "opening", "2026-07-15")])
-    assert b.count("2026-07-15") <= 3
+    assert "2026-07-16" not in b
+    assert "2026-07-14" not in b
 
 
 def test_added_later_wallets_are_named_when_there_are_five_or_fewer():
