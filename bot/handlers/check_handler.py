@@ -1135,10 +1135,14 @@ class CheckHandler:
         """A basis modifier with no date. Opening/closing only mean something for a day.
 
         Before opening/closing existed, `/check [o]` or `/check [c]` with no date fell
-        through to the fuzzy wallet filter -- [o] matched the ten OKKZ wallets by
-        prefix, [c] matched the KZO COY wallets by "contains". Someone who was using
-        [o]/[c] that way now gets this error instead, so the card tells them what to
-        type to get the same wallet group: its name, not a basis letter.
+        through to the fuzzy wallet-name filter: bare [o] resolves "starts with" to the
+        ten OKKZ wallets, bare [c] resolves "contains" to 45 wallets (any name with the
+        letter c in it anywhere). Someone who was using [o]/[c] that way now gets this
+        error instead, so the card tells them what to type for a wallet group: its
+        name, not a basis letter. (Verified against the live roster: the card's own
+        example, [KZO COY], resolves "starts with" to 7 wallets -- a different tier and
+        count from bare [c] above. It is only an example of a real group name, not a
+        claim that [c] and [KZO COY] match the same way.)
         """
         word = "opening" if mode == OPENING else "closing"
         return self._simple_notice_card(
@@ -1233,18 +1237,21 @@ class CheckHandler:
     def _create_rebuilding_card(self, date_str: str, wallet_count: int, target_date: str) -> dict:
         """Tell the user we fell back to rebuilding from the blockchain (the slow path).
 
-        Names `target_date` -- the vault date actually being reconstructed and saved --
-        not `date_str`, so the figure that eventually lands can be reconciled against
-        the sheet. For a closing query the two differ (target_date is the day after
-        date_str), so this card says both instead of leaving the reader to guess which
-        day is actually being rebuilt.
+        Names `target_date` -- the Google Sheets date actually being reconstructed and
+        saved -- not `date_str`, so the figure that eventually lands can be reconciled
+        against the sheet. For a closing query the two differ (target_date is the day
+        after date_str), so this card says both instead of leaving the reader to guess
+        which day is actually being rebuilt. Says "Google Sheets", never "vault" --
+        that word is internal shorthand and reads as a custody/wallet term to a finance
+        reader; the neighbouring "saved to Google Sheets" card uses the real name, so
+        this one must match it.
         """
         wallet_word = "wallet" if wallet_count == 1 else "wallets"
         if target_date == date_str:
             lead = f"Some balances for {date_str} aren't saved yet"
         else:
-            lead = (f"Some balances for {date_str}'s closing figure — the vault row "
-                    f"dated {target_date} — aren't saved yet")
+            lead = (f"Some balances for {date_str}'s closing figure — held in the "
+                    f"{target_date} Google Sheets record — aren't saved yet")
         return {
             "config": {
                 "wide_screen_mode": True,
