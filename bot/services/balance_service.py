@@ -346,7 +346,9 @@ class BalanceService:
 
     def _fetch_transfers_after(self, address, chain, cutoff_ms, deadline=None):
         """USDT transfers with block time > cutoff_ms, windowed (cutoff, now].
-        Returns normalized [{from,to,amount(Decimal USDT),success}] or None on error.
+        Returns normalized [{from,to,amount(Decimal USDT),success,ts}] or None on error.
+        `ts` is epoch MILLISECONDS on both chains (Tronscan's block_ts is passed through
+        as-is; Etherscan's timeStamp is seconds and is converted here).
 
         `deadline` is a wall-clock (time.monotonic) stop time supplied by the caller
         (e.g. the rebuild budget). When given it replaces this method's own deadline,
@@ -387,12 +389,27 @@ class BalanceService:
                     ts = payload.get("token_transfers") or []
                     pages += 1
                     for t in ts:
+                        # block_ts must be a real millisecond timestamp. A missing/null/
+                        # non-numeric value would default to 1970 and be silently excluded
+                        # from every future date bucket -- fail the whole fetch instead of
+                        # returning a transfer list that would understate the balance.
+                        raw_block_ts = t.get("block_ts")
+                        try:
+                            # bool is a subclass of int in Python, so int(True/False) would
+                            # otherwise silently pass as 1/0 -- reject it explicitly.
+                            if isinstance(raw_block_ts, bool):
+                                raise TypeError("bool is not a valid timestamp")
+                            block_ts_ms = int(raw_block_ts)
+                        except (TypeError, ValueError):
+                            logger.warning(f"TRC20 transfer has missing/invalid block_ts for "
+                                           f"{address[:10]}...: {raw_block_ts!r} -> unavailable")
+                            return None
                         out.append({
                             "from": t.get("from_address", ""), "to": t.get("to_address", ""),
                             "amount": Decimal(t.get("quant", "0")) / Decimal(1_000_000),
                             "success": t.get("finalResult") == "SUCCESS" and t.get("contractRet") == "SUCCESS",
                             # Tronscan already reports milliseconds.
-                            "ts": int(t.get("block_ts", 0)),
+                            "ts": block_ts_ms,
                         })
                     if len(ts) < 50:
                         break

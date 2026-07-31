@@ -57,3 +57,44 @@ def test_existing_keys_are_unchanged():
     assert set(out[0]) >= {"from", "to", "amount", "success", "ts"}
     assert out[0]["from"] == "TAAA" and out[0]["to"] == "TBBB"
     assert out[0]["success"] is True
+
+
+def test_tron_transfer_missing_block_ts_fails_safe():
+    """A row with no block_ts key at all must not silently default to 1970 --
+    that would make the transfer permanently invisible to every future date
+    boundary, understating every balance derived from it. Fail the whole fetch
+    instead, same as any other malformed Tronscan response."""
+    svc = BalanceService()
+    payload = {"token_transfers": [{
+        "from_address": "TAAA", "to_address": "TBBB", "quant": "5000000",
+        "finalResult": "SUCCESS", "contractRet": "SUCCESS",
+        # no "block_ts" key
+    }]}
+    with patch.object(svc, "_get_with_retry", return_value=_resp(payload)):
+        out = svc._fetch_transfers_after("TBBB", "TRC20", 1780000000000)
+    assert out is None
+
+
+def test_tron_transfer_null_block_ts_fails_safe():
+    """A row with block_ts explicitly null must also fail safe, not default to 1970."""
+    svc = BalanceService()
+    payload = {"token_transfers": [{
+        "from_address": "TAAA", "to_address": "TBBB", "quant": "5000000",
+        "finalResult": "SUCCESS", "contractRet": "SUCCESS", "block_ts": None,
+    }]}
+    with patch.object(svc, "_get_with_retry", return_value=_resp(payload)):
+        out = svc._fetch_transfers_after("TBBB", "TRC20", 1780000000000)
+    assert out is None
+
+
+def test_tron_transfer_boolean_block_ts_fails_safe():
+    """bool is a subclass of int in Python, so a stray JSON `false`/`true` in block_ts
+    would otherwise silently pass int() as 0/1 (1970-era) instead of being rejected."""
+    svc = BalanceService()
+    payload = {"token_transfers": [{
+        "from_address": "TAAA", "to_address": "TBBB", "quant": "5000000",
+        "finalResult": "SUCCESS", "contractRet": "SUCCESS", "block_ts": False,
+    }]}
+    with patch.object(svc, "_get_with_retry", return_value=_resp(payload)):
+        out = svc._fetch_transfers_after("TBBB", "TRC20", 1780000000000)
+    assert out is None
