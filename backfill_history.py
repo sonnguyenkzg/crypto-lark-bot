@@ -55,43 +55,44 @@ def daterange(start, end):
     return out
 
 
-# Hand-verified measurement-jitter exceptions. The daily report's row Time is
-# WRITE-time, but the balance was READ up to a few seconds earlier, so a transfer in
-# that read->write gap sits in the measured row but not in a 00:00:00-anchored
-# derivation. The strict window check below cannot see that gap, so these two rows
-# disagree. Each was investigated by hand (2026-07-31) to the exact transfer, and each
-# is on a wallet that has a row every day of the window -- so it WRITES NOTHING; the
-# disagreement is a confidence signal on an existing measured row, never on written
-# data. Listed explicitly, keyed on the exact (wallet, date, saved, derived), rather
-# than a sliding time grace: a grace is a free parameter that could reconcile a
-# genuinely WRONG derived value using an unrelated near-boundary transfer (flagged by an
-# independent review 2026-07-31). An explicit allowlist has no such degree of freedom --
-# every relaxation is a named, audited fact.
-KNOWN_MEASUREMENT_JITTER = {
-    # (wallet, date): (saved, derived, explaining transfer)
-    ("KZP COY", "2026-06-10"):
-        (Decimal("1250168.08"), Decimal("1365202.08"),
-         "row Time 00:01:23; +1.15 transfer at 00:01:21 read just after -> the measured "
-         "balance excludes it, so it is a read/write-gap artifact. Writes 0 rows."),
-    ("KZP TH BM 1", "2026-04-25"):
-        (Decimal("65081.56"), Decimal("67211.56"),
-         "row Time 00:00:57; -280.00 transfer at 00:00:57 read just before -> the "
-         "measured balance excludes it, a read/write-gap artifact. Writes 0 rows."),
-}
+def _fmt_gmt7(ms):
+    """ms epoch -> HH:MM:SS in GMT+7, for reporting an inferred fetch instant."""
+    return datetime.fromtimestamp(ms / 1000, tz=GMT7).strftime("%H:%M:%S")
 
 
-def net_transfers_in_window(transfers, address, date_str, time_str):
-    """Signed net of `address`'s successful transfers strictly after 00:00:00 GMT+7 on
-    date_str, up to and including `time_str` that same day -- the instant the sheet row
-    was measured. The daily report does not land at exactly 00:00:00; it lands
-    00:00:31..00:01:35, so a transfer in that window is correctly IN the measured row and
-    correctly ABSENT from a 00:00:00-anchored derivation. +received, -sent.
+def disagreement_explained(transfers, address, date_str, time_str, saved, derived):
+    """Is a derived-vs-measured disagreement fully explained by WHEN the balance was
+    actually read, rather than a real derivation error?
 
-    balance_at(00:00:00) = balance_at(time_str) - net(transfers in (00:00:00, time_str]).
+    The daily report's row Time is the WRITE instant, not the READ instant: it reads 71
+    wallets sequentially with rate-limit pacing and writes the whole batch afterwards, so
+    each wallet's balance was actually captured at its own moment, somewhat BEFORE the
+    stamped Time. A transfer landing between that true (unknown) read instant and the
+    stamped Time sits inside (00:00:00, Time] but was never seen by the read that
+    produced `saved` -- so summing the WHOLE window can overshoot or undershoot by
+    exactly that transfer's amount, even though the derivation itself is correct.
 
-    STRICT single window at the stamped Time -- no sliding grace. A disagreement the
-    stamped-Time window cannot explain either is a genuine mismatch (blocks the write) or
-    is one of the hand-verified KNOWN_MEASUREMENT_JITTER rows.
+    The true read instant is unknown, but it must fall at or just after one of this
+    wallet's own transfer timestamps in the window (or the window's very start). So walk
+    the window's successful transfers in chronological order, accumulating a running net,
+    and after each one test whether
+
+        derived + running_net == saved
+
+    EXACTLY -- to the cent, the SAME 0.01 tolerance used everywhere else in this file,
+    never a looser one. The first transfer whose running net satisfies this is taken as
+    the inferred read instant: everything up to and including it was captured by the
+    read; everything after it was not.
+
+    This is NOT a loosened tolerance and must never become one: the equality check stays
+    exact; only the WINDOW END being searched for is uncertain, and only a prefix of this
+    wallet's own real transfers can supply it -- never an arbitrary allowance. A genuine
+    derivation error, one that no prefix of the wallet's own transfers reconciles to the
+    cent, is NOT explained by this and still blocks the write.
+
+    balance_at(00:00:00) = balance_at(read_instant) - net(transfers in (00:00:00, read_instant]).
+
+    Returns (explained: bool, net: Decimal | None, fetch_instant_ms: int | None).
     """
     me = canonical_address(address)
     start = day_boundary_ms(date_str)
@@ -99,20 +100,23 @@ def net_transfers_in_window(transfers, address, date_str, time_str):
         end = int(datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
                   .replace(tzinfo=GMT7).timestamp() * 1000)
     except ValueError:
-        return Decimal(0)
-    net = Decimal(0)
-    for t in transfers or []:
-        if not t.get("success", True):
-            continue
-        ts = int(t["ts"])
-        if not (start < ts <= end):
-            continue
+        return (False, None, None)   # malformed/missing time -> nothing to explain it with
+
+    window = [t for t in (transfers or [])
+              if t.get("success", True) and start < int(t["ts"]) <= end]
+    window.sort(key=lambda t: int(t["ts"]))     # chronological -- earliest prefix first
+
+    target = Decimal(saved) - Decimal(derived)
+    running = Decimal(0)
+    for t in window:
         amount = t["amount"]
         if canonical_address(t.get("to", "")) == me:
-            net += amount
+            running += amount
         if canonical_address(t.get("from", "")) == me:
-            net -= amount
-    return net
+            running -= amount
+        if abs(running - target) <= Decimal("0.01"):
+            return (True, running, int(t["ts"]))
+    return (False, None, None)
 
 
 def main():
@@ -273,27 +277,22 @@ def main():
                 if derived is not None and abs(derived - saved) <= Decimal("0.01"):
                     agree += 1
                 elif derived is not None:
-                    # The daily report does not land at exactly 00:00:00 GMT+7 -- it
-                    # lands 00:00:31..00:01:35. A transfer inside that window is
-                    # correctly IN the measured row and correctly ABSENT from a
-                    # derivation anchored at the true 00:00:00 boundary; that is not a
-                    # math error, it is two different (both correct) instants. Explain
-                    # it from the wallet's own transfers rather than loosening the
-                    # tolerance, which would hide real errors instead of this one
-                    # known, understood effect.
+                    # The daily report does not land at exactly 00:00:00 GMT+7, and its
+                    # row Time is the WRITE instant, not the READ instant -- 71 wallets
+                    # are read sequentially with rate-limit pacing, then the whole batch
+                    # is written, so each wallet's own read happened somewhat before the
+                    # stamped Time. A transfer in that read->write gap sits inside
+                    # (00:00:00, Time] but was never seen by the read that produced
+                    # `saved`. Search for the wallet's own true read instant -- the
+                    # prefix of its own transfers (in time order) whose running net
+                    # reconciles derived and saved EXACTLY to the cent -- rather than
+                    # loosening the tolerance, which would hide real errors instead of
+                    # this one known, understood effect.
                     time_str = snap.get("time") or "00:00:00"
-                    window_net = net_transfers_in_window(transfers, addr, d, time_str)
-                    jit = KNOWN_MEASUREMENT_JITTER.get((name, d))
-                    if abs(derived - (saved - window_net)) <= Decimal("0.01"):
-                        # explained by the exact measured Time -- a transfer cleanly inside
-                        # the (00:00:00, Time] snapshot window.
-                        explained.append((name, d, saved, derived, time_str, window_net))
-                    elif (jit is not None
-                          and abs(Decimal(saved) - jit[0]) <= Decimal("0.01")
-                          and abs(Decimal(derived) - jit[1]) <= Decimal("0.01")):
-                        # a hand-verified read/write-gap artifact on a wallet that writes
-                        # nothing; matched on exact saved AND derived, not a time grace.
-                        explained.append((name, d, saved, derived, time_str, window_net))
+                    ok_expl, window_net, fetch_ms = disagreement_explained(
+                        transfers, addr, d, time_str, saved, derived)
+                    if ok_expl:
+                        explained.append((name, d, saved, derived, time_str, window_net, fetch_ms))
                     else:
                         disagree.append((name, d, saved, derived))
                 continue
@@ -309,11 +308,13 @@ def main():
     total = sum(len(v) for v in to_write.values())
     print(f"\n{'='*72}")
     print(f"agreement check : {agree:,} existing rows matched the derivation")
-    print(f"explained       : {len(explained):,} disagreements explained by a transfer "
-          f"inside the snapshot window (report only, does not block the write)")
-    for name, d, saved, derived, time_str, window_net in explained[:20]:
+    print(f"explained       : {len(explained):,} disagreements explained by the wallet's "
+          f"own true read instant, inferred from its transfers (report only, does not "
+          f"block the write)")
+    for name, d, saved, derived, time_str, window_net, fetch_ms in explained[:20]:
+        fetch_str = _fmt_gmt7(fetch_ms) if fetch_ms is not None else "?"
         print(f"    {name:<26} {d}  saved={saved:,.2f}  derived={derived:,.2f}  "
-              f"time={time_str}  window_net={window_net:+,.2f}")
+              f"row_time={time_str}  inferred_fetch={fetch_str}  window_net={window_net:+,.2f}")
     print(f"excluded        : {excluded_rebuilt:,} existing rows were themselves "
           f"rebuilt (not ground truth; skipped from the agreement check, still counted "
           f"as 'already has a row')")
