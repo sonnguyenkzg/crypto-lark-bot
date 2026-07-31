@@ -292,13 +292,44 @@ def test_dates_may_be_supplied_in_any_order():
     assert a == b
 
 
-def test_each_transfer_is_visited_once_regardless_of_date_count():
-    """Efficiency is the reason this function exists -- 212 dates must not mean 212 passes."""
+def test_a_full_212_day_window_is_correct_end_to_end():
+    """The real backfill shape: 212 dates, many transfers, one call."""
     txs = [tx("2026-03-10", 1, to=ME) for _ in range(50)]
     dates = [(datetime(2026, 1, 1) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(212)]
     out = balances_by_date(Decimal("50"), txs, ME, dates)
-    assert out["2026-01-01"] == Decimal("0")
-    assert out["2026-12-31" if "2026-12-31" in out else dates[-1]] == Decimal("50")
+    assert len(out) == 212
+    assert out["2026-01-01"] == Decimal("0"), "before the transfers"
+    assert out["2026-03-10"] == Decimal("0"), "00:00 that day, transfers land at 12:00"
+    assert out["2026-03-11"] == Decimal("50"), "after the transfers"
+    assert out[dates[-1]] == Decimal("50"), "the far end of the window"
+
+
+def test_each_transfer_is_examined_once_across_the_whole_series():
+    """Efficiency is the REASON this function exists, so prove it rather than assume it.
+
+    Counts how many times the transfer list is read by making `amount` observable.
+    A per-date implementation would touch each transfer once PER DATE.
+    """
+    class CountingDecimal(Decimal):
+        reads = 0
+        def __radd__(self, other):
+            type(self).reads += 1
+            return Decimal(self) + other
+        def __rsub__(self, other):
+            type(self).reads += 1
+            return other - Decimal(self)
+
+    txs = []
+    for _ in range(10):
+        t = tx("2026-03-10", 1, to=ME)
+        t["amount"] = CountingDecimal("1")
+        txs.append(t)
+    dates = [(datetime(2026, 1, 1) + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(212)]
+    CountingDecimal.reads = 0
+    balances_by_date(Decimal("10"), txs, ME, dates)
+    assert CountingDecimal.reads <= 10, (
+        f"each of the 10 transfers must be summed once, not once per date; "
+        f"got {CountingDecimal.reads} reads across {len(dates)} dates")
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -929,10 +960,22 @@ def test_a_zero_balance_wallet_is_listed_not_hidden():
 
 
 def test_summary_counts_every_wallet():
+    """counted + any unavailable must reconcile to the roster size, always."""
     h = CheckHandler()
     b = json.dumps([h._create_historical_card(_entries(68, 3), "2026-01-01", [], [], None,
                                               "closing", "2026-01-02")])
-    assert "71" in b
+    assert "Total wallets in monitoring: 71" in b.replace("**", "")
+    assert "71 wallets counted" in b.replace("**", "")
+
+
+def test_an_unavailable_wallet_is_named_and_excluded_from_the_count():
+    """A failed reconstruction must never be silently counted as zero."""
+    h = CheckHandler()
+    b = json.dumps([h._create_historical_card(_entries(68, 2, unavailable=1), "2026-01-01",
+                                              [], [], None, "closing", "2026-01-02")]).replace("**", "")
+    assert "U0" in b, "the unavailable wallet must be named"
+    assert "70 wallets counted" in b, "counted excludes the unavailable one"
+    assert "Total wallets in monitoring: 71" in b, "but the roster total still says 71"
 ```
 
 - [ ] **Step 2: Run to verify it fails**
