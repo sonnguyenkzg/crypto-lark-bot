@@ -522,12 +522,21 @@ def main():
 
     print("\nwriting...")
     written = 0
-    for d in sorted(to_write):
+    write_dates = sorted(to_write)
+    for i, d in enumerate(write_dates):
         ok, batch = logger.save_rebuilt_balances(d, to_write[d])
         if not ok:
-            sys.exit(f"WRITE FAILED on {d} after {written} rows. Stopping.")
+            sys.exit(f"WRITE FAILED on {d} after {written} rows. Stopping. "
+                     f"Re-run --write to fill the remaining gaps (idempotent -- rebuilt "
+                     f"rows already written are skipped, never duplicated).")
         written += len(to_write[d])
         print(f"  {d}  {len(to_write[d]):>3} rows  batch {batch}")
+        # One append per date is one Sheets WRITE request; the default quota is 60 write
+        # requests per minute per user, and an unpaced loop bursts straight through it
+        # (observed: HTTP 429 after ~2,000 rows). Pace to ~40/min, comfortably under, so a
+        # multi-hundred-date run completes in one pass instead of quota-failing part way.
+        if i + 1 < len(write_dates):
+            time.sleep(1.5)
     print(f"\nwrote {written:,} rows")
 
 
