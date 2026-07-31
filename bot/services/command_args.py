@@ -124,3 +124,36 @@ def resolve_fuzzy(token, candidates, n=3, cutoff=0.6):
     ranked = sorted(((score(c), c) for c in candidates), key=lambda x: -x[0])
     close = [c for s, c in ranked if s >= cutoff][:n]
     return (close, "closest match") if close else ([], "none")
+
+
+# Balance-basis modifiers for /check [date]. Deliberately NOT "open"/"close": both
+# resolve to real wallets through fuzzy matching today ("open" -> KZO PEN SETTLE TRC 1
+# by contains, "close" -> KZO SETTLE OPS TRC 1 by closest match), so claiming them as
+# modifiers would silently take a working filter away.
+OPENING_TOKENS = frozenset({"o", "opening"})
+CLOSING_TOKENS = frozenset({"c", "closing"})
+
+
+def extract_mode(tokens):
+    """Split balance-basis modifiers out of a token list.
+
+    Returns (mode, rest, conflict):
+      mode      "opening" | "closing" | None   -- None means the caller applies its default
+      rest      tokens with every modifier removed, original order preserved
+      conflict  True when BOTH an opening and a closing modifier were given
+
+    Position-independent, case-insensitive, and repetition-tolerant: [o][o] and
+    [o][opening] both mean opening, because repeating yourself is not a contradiction.
+    """
+    rest, modes = [], set()
+    for t in tokens:
+        key = t.strip().lower()
+        if key in OPENING_TOKENS:
+            modes.add("opening")
+        elif key in CLOSING_TOKENS:
+            modes.add("closing")
+        else:
+            rest.append(t)
+    if len(modes) > 1:
+        return None, rest, True
+    return (modes.pop() if modes else None), rest, False
