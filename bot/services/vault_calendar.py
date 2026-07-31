@@ -6,6 +6,8 @@ that single fact.
 """
 from datetime import datetime, timedelta
 
+from bot.services.chain_detector import canonical_address
+
 OPENING = "opening"
 CLOSING = "closing"
 
@@ -23,3 +25,57 @@ def target_date_for(date_str, mode):
     if mode != CLOSING:
         raise ValueError(f"unknown balance basis {mode!r}; expected {OPENING!r} or {CLOSING!r}")
     return (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _iso_prefix(value):
+    """The YYYY-MM-DD prefix of `value`, or None if it is absent or not a real date."""
+    if not value:
+        return None
+    prefix = str(value)[:10]
+    try:
+        datetime.strptime(prefix, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None
+    return prefix
+
+
+def build_first_seen(roster, rows):
+    """Earliest date each wallet is known to have existed, keyed by canonical address.
+
+        first_seen = min( created_at when present , earliest vault row for that wallet )
+
+    Why not created_at alone -- both failure modes are real, measured on the live data:
+
+      1. 27 of 71 wallets have no created_at at all. Treating that as "always existed"
+         made 44 of 313 dates look gappy and provoked reconstruction of wallets that
+         were never monitored then. All 27 have vault rows, so all 27 are inferable.
+      2. created_at is sometimes LATER than data already held. KZDW DPP TH 2 records
+         2026-01-15 against a measured row from 2025-12-17. Trusting created_at alone
+         would hide a wallet on a date whose balance is sitting in the sheet.
+
+    Taking the minimum keeps created_at as the primary signal while never contradicting
+    recorded evidence. It also gives the guarantee the callers rely on: a wallet holding
+    a row on D necessarily has first_seen <= D, so no saved balance is ever excluded.
+
+    Returns None for a wallet with neither signal; callers treat that as "assume it
+    existed", which is the safe direction and matches the previous behaviour.
+    """
+    earliest = {}
+    for r in rows or []:
+        if len(r) < 6:
+            continue
+        date = _iso_prefix(r[1])
+        key = canonical_address(r[5])
+        if not date or not key:
+            continue
+        if key not in earliest or date < earliest[key]:
+            earliest[key] = date
+
+    out = {}
+    for w in roster:
+        key = canonical_address(w.get("address", ""))
+        if not key:
+            continue
+        candidates = [c for c in (_iso_prefix(w.get("created_at")), earliest.get(key)) if c]
+        out[key] = min(candidates) if candidates else None
+    return out
