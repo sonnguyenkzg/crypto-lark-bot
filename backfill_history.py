@@ -19,6 +19,12 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+# Importing Config runs bot/utils/config.py's module-level load_dotenv(), the same
+# mechanism main.py and lark_bot.py rely on -- so GOOGLE_CREDENTIALS_FILE, GOOGLE_SHEET_ID,
+# TRON_API_KEY and ETHEREUM_API_KEY are picked up from .env automatically. Without this,
+# an operator who forgets to export them by hand would silently hit "sheet unconfigured"
+# and this script would refuse to run for the wrong reason.
+from bot.utils.config import Config
 from bot.services.balance_history import balances_by_date, day_boundary_ms
 from bot.services.balance_service import BalanceService
 from bot.services.chain_detector import canonical_address
@@ -54,6 +60,9 @@ def main():
     ap.add_argument("--end", default="2026-07-30")
     ap.add_argument("--write", action="store_true", help="actually save (default: dry run)")
     ap.add_argument("--limit", type=int, default=0, help="only process the first N wallets")
+    ap.add_argument("--wallet", action="append", default=None,
+                     help="only process this wallet, by its exact name in wallets.json "
+                          "(repeatable, e.g. --wallet 'OKKZ1A' --wallet 'OKKZ 2')")
     args = ap.parse_args()
 
     if args.write and in_blackout():
@@ -67,6 +76,13 @@ def main():
     with open("wallets.json") as f:
         raw = json.load(f)
     roster = raw if isinstance(raw, list) else list(raw.values())
+    if args.wallet:
+        wanted = set(args.wallet)
+        roster = [w for w in roster if w.get("wallet") in wanted]
+        missing = wanted - {w.get("wallet") for w in roster}
+        if missing:
+            sys.exit(f"REFUSING: unknown wallet name(s) not in wallets.json: "
+                     f"{', '.join(sorted(missing))}")
     if args.limit:
         roster = roster[:args.limit]
 
