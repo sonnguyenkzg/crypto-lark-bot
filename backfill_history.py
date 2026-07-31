@@ -60,9 +60,21 @@ def _fmt_gmt7(ms):
     return datetime.fromtimestamp(ms / 1000, tz=GMT7).strftime("%H:%M:%S")
 
 
-def disagreement_explained(transfers, address, date_str, time_str, saved, derived):
+def disagreement_explained(transfers, address, date_str, time_str, saved, derived,
+                           allow_partial=True):
     """Is a derived-vs-measured disagreement fully explained by WHEN the balance was
     actually read, rather than a real derivation error?
+
+    `allow_partial` gates the one degree of freedom this check has. With it True, ANY
+    prefix of the window's transfers may supply the inferred read instant. That freedom
+    is what an independent review flagged: a genuinely WRONG derived value could be
+    reconciled by a coincidental intermediate prefix whose net happens to equal the
+    error. So callers pass allow_partial=False for any wallet that WRITES rows -- there,
+    only the FULL window (the complete, fixed net up to the stamped Time; zero degrees of
+    freedom, the exact check that cannot mask an error) may explain a disagreement.
+    allow_partial=True is used ONLY for wallets that write nothing, where a false explain
+    can corrupt no written data -- it can only mis-label a confidence signal on a row
+    that already exists and is never touched.
 
     The daily report's row Time is the WRITE instant, not the READ instant: it reads 71
     wallets sequentially with rate-limit pacing and writes the whole batch afterwards, so
@@ -108,13 +120,14 @@ def disagreement_explained(transfers, address, date_str, time_str, saved, derive
 
     target = Decimal(saved) - Decimal(derived)
     running = Decimal(0)
-    for t in window:
+    for i, t in enumerate(window):
         amount = t["amount"]
         if canonical_address(t.get("to", "")) == me:
             running += amount
         if canonical_address(t.get("from", "")) == me:
             running -= amount
-        if abs(running - target) <= Decimal("0.01"):
+        is_full_window = (i == len(window) - 1)
+        if abs(running - target) <= Decimal("0.01") and (allow_partial or is_full_window):
             return (True, running, int(t["ts"]))
     return (False, None, None)
 
@@ -285,6 +298,15 @@ def main():
 
         series = balances_by_date(current_at_T, transfers, addr, dates)
 
+        # Does this wallet write ANY row? A row is written only for a date with no
+        # existing row and a usable derived value. This gates the prefix-walk's one
+        # degree of freedom: a wallet that writes something must clear its disagreements
+        # with the zero-freedom full-window check only; the partial-prefix relaxation is
+        # allowed exclusively for wallets that write nothing, where a false explain can
+        # corrupt no written data.
+        wallet_writes = any(existing.get(d, {}).get(key) is None and series[d] is not None
+                            for d in dates)
+
         gaps = 0
         for d in dates:
             derived = series[d]
@@ -327,7 +349,8 @@ def main():
                     # this one known, understood effect.
                     time_str = snap.get("time") or "00:00:00"
                     ok_expl, window_net, fetch_ms = disagreement_explained(
-                        transfers, addr, d, time_str, saved, derived)
+                        transfers, addr, d, time_str, saved, derived,
+                        allow_partial=not wallet_writes)
                     if ok_expl:
                         explained.append((name, d, saved, derived, time_str, window_net, fetch_ms))
                     else:
