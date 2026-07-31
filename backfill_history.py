@@ -202,6 +202,7 @@ def main():
 
     to_write = defaultdict(list)          # date -> [row dicts]
     unavailable, agree, disagree, explained = [], 0, [], []
+    unverifiable_writers = []             # writers with no scheduled row to validate against
     excluded_rebuilt = 0
     rebuilt_mismatches = []                # informational only -- never blocks the write
     unfilled_from_unavailable = 0
@@ -325,14 +326,36 @@ def main():
 
         series = balances_by_date(current_at_T, transfers, addr, dates)
 
-        # Does this wallet write ANY row? A row is written only for a date with no
-        # existing row and a usable derived value. This gates the prefix-walk's one
-        # degree of freedom: a wallet that writes something must clear its disagreements
-        # with the zero-freedom full-window check only; the partial-prefix relaxation is
-        # allowed exclusively for wallets that write nothing, where a false explain can
-        # corrupt no written data.
+        # Does this wallet WRITE any row (a date with no existing row and a usable derived
+        # value)? And how many SCHEDULED (measured, non-rebuilt) rows does it have to be
+        # validated against? These decide how strictly its disagreements are judged.
+        #
+        # A wallet that writes gap rows is held to the strictest bar: its derivation must
+        # reproduce EVERY scheduled measured row it has, EXACTLY (within 0.01), with no
+        # jitter/prefix explanation at all. Gap rows have no measured row to catch an
+        # error, so the only thing that earns trust in them is the derivation nailing all
+        # the ground-truth rows the wallet does have. Any disagreement -- from a residual
+        # sub-second race, an ERC20 second-granular boundary, a constant offset, anything
+        # -- means refuse the whole run. The prefix-walk read-instant inference is used
+        # ONLY for wallets that write nothing, where a false explain can corrupt no data.
         wallet_writes = any(existing.get(d, {}).get(key) is None and series[d] is not None
                             for d in dates)
+        wallet_scheduled = 0
+        for d in dates:
+            snap_d = existing.get(d, {}).get(key)
+            if snap_d is not None:
+                rr = row_index.get((d, snap_d["batch_id"], key))
+                if rr and len(rr) > 7 and rr[7] == "scheduled":
+                    wallet_scheduled += 1
+        if wallet_writes and wallet_scheduled == 0:
+            # A writer with no scheduled row cannot be validated at all: nothing catches a
+            # bad derivation. Refuse rather than write unvalidated gap rows.
+            n_gap = sum(1 for d in dates
+                        if existing.get(d, {}).get(key) is None and series[d] is not None)
+            unverifiable_writers.append((name, n_gap))
+            print(f"[{n:>3}/{len(roster)}] {name:<28} SKIPPED - writes rows but has no "
+                  f"scheduled measured row to validate against")
+            continue
 
         gaps = 0
         for d in dates:
@@ -362,22 +385,27 @@ def main():
                     continue
                 if derived is not None and abs(derived - saved) <= Decimal("0.01"):
                     agree += 1
+                elif derived is not None and wallet_writes:
+                    # STRICT bar for writers: this scheduled row is ground truth and the
+                    # derivation did not reproduce it exactly. Because this wallet writes
+                    # gap rows that have no measured row to catch an error, we do NOT try
+                    # to explain the disagreement away -- any mismatch on a ground-truth
+                    # row means the derivation is off, so refuse the whole run. This closes
+                    # every residual-timing / boundary / offset path in one rule: an offset
+                    # that reached the gap rows would necessarily show up here too.
+                    disagree.append((name, d, saved, derived))
                 elif derived is not None:
-                    # The daily report does not land at exactly 00:00:00 GMT+7, and its
-                    # row Time is the WRITE instant, not the READ instant -- 71 wallets
-                    # are read sequentially with rate-limit pacing, then the whole batch
-                    # is written, so each wallet's own read happened somewhat before the
-                    # stamped Time. A transfer in that read->write gap sits inside
-                    # (00:00:00, Time] but was never seen by the read that produced
-                    # `saved`. Search for the wallet's own true read instant -- the
-                    # prefix of its own transfers (in time order) whose running net
-                    # reconciles derived and saved EXACTLY to the cent -- rather than
-                    # loosening the tolerance, which would hide real errors instead of
-                    # this one known, understood effect.
+                    # Non-writing wallet: this disagreement is only a confidence signal on
+                    # a row that already exists and is never touched. The daily report's
+                    # row Time is the WRITE instant, not the READ instant, so a transfer in
+                    # that read->write gap sits inside (00:00:00, Time] but was not in the
+                    # read that produced `saved`. Search for the wallet's own true read
+                    # instant -- the prefix of its transfers whose running net reconciles
+                    # derived and saved EXACTLY. A false explain here can corrupt no written
+                    # data, so the prefix relaxation is safe.
                     time_str = snap.get("time") or "00:00:00"
                     ok_expl, window_net, fetch_ms = disagreement_explained(
-                        transfers, addr, d, time_str, saved, derived,
-                        allow_partial=not wallet_writes)
+                        transfers, addr, d, time_str, saved, derived, allow_partial=True)
                     if ok_expl:
                         explained.append((name, d, saved, derived, time_str, window_net, fetch_ms))
                     else:
@@ -418,11 +446,20 @@ def main():
           f"({unfilled_from_unavailable:,} wallet-days left unfilled by skipped wallets)")
     for name, why, extra in unavailable[:20]:
         print(f"    {name:<26} {why}")
+    print(f"unverifiable    : {len(unverifiable_writers)} writers had gap rows but no "
+          f"scheduled measured row to validate against (their gaps are NOT written)")
+    for name, n_gap in unverifiable_writers[:20]:
+        print(f"    {name:<26} {n_gap} gap rows withheld")
     print(f"rows to write   : {total:,} across {len(to_write)} dates")
 
     if disagree:
-        sys.exit("\nREFUSING TO WRITE: the derivation disagrees with rows that were "
-                 "measured on the day. Investigate before backfilling.")
+        sys.exit("\nREFUSING TO WRITE: the derivation disagrees with a scheduled row that "
+                 "was measured on the day. Investigate before backfilling.")
+
+    if unverifiable_writers:
+        sys.exit("\nREFUSING TO WRITE: one or more wallets would write gap rows but have "
+                 "no scheduled measured row to validate the derivation against. Refusing "
+                 "to write unvalidated data.")
 
     if not args.write:
         print("\nDRY RUN -- nothing written. Re-run with --write to save.")
