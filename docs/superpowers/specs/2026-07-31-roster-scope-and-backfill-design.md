@@ -31,16 +31,33 @@ hold?"*.
 ## 2. The rule
 
 ```
-scope       = every wallet in wallets.json, for every date. No exceptions.
+scope       = every wallet in wallets.json that EXISTED on the date.
 saved row?  -> use it
-no row?     -> reconstruct from the chain, show it, save it marked "rebuilt"
+no row, and it existed?      -> reconstruct from the chain, show it, save it "rebuilt"
+no row, and it did not exist -> "added on or after this date", not counted
 ```
 
-**When a wallet was added is never consulted.** A wallet that did not exist on the date reconstructs
-to `0.00`, which is the truthful answer rather than an excuse. A zero is a real balance and is listed
-like any other, so the wallet count always reconciles to the roster size.
+**Existence is on-chain creation, not the wallets.json add-date and not `created_at`.** A wallet is
+counted from the first date it ever held a POSITIVE balance in the vault (`first_funded`). That keeps
+both truths:
 
-This deletes a concept rather than adding one — see §4.
+- **Money held before monitoring is still shown.** `OKKZ5A` held ~2.35M before it was added; hiding
+  it understated the total. It has a positive balance from its real funding date, so it counts.
+- **A wallet has no balance before it was funded.** A wallet created on day T genuinely had nothing on
+  T−1, so a date before its `first_funded` is reported "added on or after this date" — not a fictitious
+  `0.00` for a day it did not exist.
+
+> **Amendment (2026-08-01).** An earlier draft of this rule said "when a wallet was added is never
+> consulted; a non-existent wallet reconstructs to `0.00`." That hid the opposite error — inventing a
+> zero for a day a wallet did not exist. The rule above supersedes it. Existence uses `first_funded`
+> (earliest positive vault balance), never `created_at` (unreliable in both directions). It is trusted
+> only on/after `coverage_start` = `max(earliest vault row, VAULT_COMPLETE_FROM)`, the date the vault
+> is verified-complete. `VAULT_COMPLETE_FROM = 2026-01-01` is the backfill floor; the vault also holds
+> *sparse* scheduled rows back to ~2025-09-22, where a funded wallet may simply be unrecorded, so its
+> `first_funded` would read later than its true creation. Claiming "added on or after" there would hide
+> money — so below `coverage_start` we reconstruct instead (showing the true balance, or an honest
+> `0.00` for a genuine pre-monitoring date). All date comparisons go through `normalize_iso_date`, so a
+> non-zero-padded cell can never sort a real balance as "before it existed" and hide it.
 
 ---
 
@@ -122,20 +139,25 @@ If it is right, the code change ships against a vault that is already complete.
 
 ---
 
-## 4. What the code loses
+## 4. How existence is decided
 
-| Removed | Why |
+Existence is derived from the vault itself, not from a stored per-wallet field, so nothing has to be
+kept in sync:
+
+| Signal | Source |
 |---|---|
-| `not_yet_created` status | no wallet is ever excluded |
-| `_existed_on`, `_existed_by` in `check_handler.py` | nothing asks whether a wallet existed |
-| `build_first_seen` in `vault_calendar.py`, and its tests | nothing consumes `first_seen` |
-| `first_seen` key in `get_history_bundle` | dead payload |
-| The "added on or after this date" card line | no such category exists |
+| `first_funded[addr]` — earliest positive vault balance (a wallet's creation) | `_first_funded_from_rows`, computed in `get_history_bundle` from the one DAILY_REPORT read |
+| `coverage_start` — earliest date `first_funded` may be trusted = `max(earliest row, VAULT_COMPLETE_FROM)` | `get_history_bundle`, same read |
+| `not_yet_created` status + "added on or after this date" card line | `classify_wallets`, only when `coverage_start <= date < first_funded[addr]` |
+
+`created_at` in `wallets.json` is never consulted (unreliable: sometimes stamped after real funding,
+which would hide money; sometimes before, which would invent a zero). `first_seen` / `build_first_seen`
+from earlier drafts stay removed — existence is now `first_funded`, recomputed each read.
 
 `target_date_for`, the `[o]`/`[c]` grammar, the filters and the bracket parsing are all untouched.
 
-Every wallet now ends in one of three states: `saved`, `rebuilt`, or `unavailable` (the
-reconstruction failed and no figure is claimed).
+Every wallet ends in one of four states: `saved`, `rebuilt`, `unavailable` (reconstruction failed, no
+figure claimed), or `not_yet_created` (did not exist on the date; shown but not counted).
 
 ---
 
@@ -143,13 +165,16 @@ reconstruction failed and no figure is claimed).
 
 ```
 📊 Total wallets in monitoring: 71
-• 68 have a balance recorded for this date
-• 3 were calculated from blockchain records
-➡️ 71 wallets counted in the total below
+• 39 have a balance recorded for this date
+• 1 was calculated from blockchain records
+• 31 wallets were added on or after this date, so they had no balance yet
+➡️ 40 wallets counted in the total below
 ```
 
-Wallets reconstructing to `0.00` appear in the list like any other. Hiding them would break the
-reconciliation to 71 and reintroduce the very silence this change removes.
+(Real figures for `/check [2026-01-01]`.) Every line adds up to the roster: `saved + rebuilt +
+not_yet_created + failed = 71`, so the counted total is never a number the reader has to work
+backwards to. A wallet that genuinely reconstructs to `0.00` (existed, held nothing) still appears
+in the list and counts; only wallets that did not yet exist are set aside as "added on or after".
 
 If a reconstruction fails, that wallet is listed as **unavailable** and excluded from the total, with
 the count saying so — never silently counted as zero.

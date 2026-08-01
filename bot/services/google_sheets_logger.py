@@ -9,6 +9,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from bot.services.chain_detector import canonical_address
+from bot.services.command_args import normalize_iso_date
 
 # The vault's day boundary: a row dated D describes the balance at D 00:00:00 GMT+7.
 #
@@ -25,6 +26,24 @@ from bot.services.chain_detector import canonical_address
 # match, so a rebuild anchors to the true GMT+7 boundary instead.
 VAULT_DAY_BOUNDARY = "00:00:00"
 REBUILT_TIME = VAULT_DAY_BOUNDARY   # what lands in the Time column of a rebuilt row
+
+# The earliest date the vault is VERIFIED-COMPLETE: every wallet that existed on a date
+# on/after this has a row for it (the one-time backfill guaranteed full-roster coverage
+# from here through today). This is the ONLY window where absence of a row is real
+# evidence a wallet did not exist -- so "added on or after this date" (not_yet_created)
+# may be claimed only for dates on/after it.
+#
+# It is deliberately NOT the earliest row in the sheet. The vault holds sparse scheduled
+# rows from before the backfill (down to ~2025-09-22) when the daily report did not yet
+# track every wallet; there, a funded wallet can have NO row, so its first_funded would
+# read LATER than its true creation and a pre-backfill check would wrongly hide real money.
+# For any date before this floor we reconstruct from chain instead (which shows the true
+# balance, or an honest 0.00 for a pre-monitoring date) -- never hide.
+#
+# If the backfill window is ever extended earlier, move this date with it. A value set too
+# LATE only costs an unnecessary reconstruction (safe); too EARLY could hide money, so err
+# late. Backfill covered 2026-01-01 onward, so that is the floor.
+VAULT_COMPLETE_FROM = "2026-01-01"
 
 
 class GoogleSheetsBalanceLogger:
@@ -302,9 +321,13 @@ class GoogleSheetsBalanceLogger:
            would let a reconstruction silently override a genuinely measured snapshot.
         """
         snap = {}
+        want = normalize_iso_date(date_str) or date_str
         for r in rows:
             # cols: 0 batch,1 date,2 time,3 wallet,4 company,5 address,6 balance,7 type
-            if len(r) < 7 or r[1] != date_str:
+            # Normalise both dates: a stray non-padded cell must still match its calendar
+            # date, so a saved balance is never missed (which would then be reconstructed
+            # -- or, worse under the existence rule, hidden as not-yet-created).
+            if len(r) < 7 or (normalize_iso_date(r[1]) or r[1]) != want:
                 continue
             key = canonical_address(r[5])
             if not key:
@@ -323,6 +346,37 @@ class GoogleSheetsBalanceLogger:
                     "time": r[2],
                 }
         return snap
+
+    def _first_funded_from_rows(self, rows):
+        """The earliest date each wallet ever held a NON-ZERO balance in DAILY_REPORT --
+        its on-chain creation, keyed by canonical_address.
+
+        This is what defines a wallet's existence: a wallet created (first funded) on day
+        T has no balance for any day before T, so `/check [D]` reports it as "added on or
+        after this date" for D < T rather than reconstructing a 0.00. Uses the wallet's
+        first non-zero balance on-chain, NOT the wallets.json created_at field (which is
+        unreliable -- sometimes stamped later than the wallet was actually funded, which
+        would hide real money, and sometimes earlier, which would invent 0.00 rows before
+        the wallet existed). A wallet that has never held a non-zero balance is absent
+        from the map; callers treat absent as "no known creation" and fall back to
+        reconstructing, so a genuinely-funded-but-unrecorded wallet is never hidden.
+        """
+        earliest = {}
+        for r in rows or []:
+            if len(r) < 7:
+                continue
+            d = normalize_iso_date(r[1])       # canonical, so the < compare below is safe
+            if d is None:
+                continue
+            key = canonical_address(r[5])
+            if not key:
+                continue
+            amount = self._parse_amount(r[6])
+            if amount is None or amount <= 0:
+                continue                       # only a POSITIVE balance marks existence
+            if key not in earliest or d < earliest[key]:
+                earliest[key] = d
+        return earliest
 
     def _nearest_from(self, rows, dates, date_str):
         """Find the date (among `dates`) closest to date_str and its snapshot.
@@ -353,26 +407,50 @@ class GoogleSheetsBalanceLogger:
     def get_history_bundle(self, date_str):
         """Everything the dated check needs, from ONE DAILY_REPORT read.
 
-        Returns {"ok", "snapshot", "nearest_date", "nearest_snapshot"}.
+        Returns {"ok", "snapshot", "nearest_date", "nearest_snapshot", "first_funded",
+        "coverage_start"}.
 
         `ok` is False whenever the read failed. A caller MUST treat that as "I don't
         know what's saved", never as "nothing is saved" -- confusing the two is what
         once made /check rebuild and duplicate 68 already-saved wallets.
+
+        `first_funded` maps canonical_address -> the earliest date the wallet ever held a
+        positive balance (its on-chain creation). The dated check uses it so a wallet is
+        reported "added on or after this date" for any date before it was funded, instead
+        of reconstructing a 0.00 for a day the wallet did not yet exist.
+
+        `coverage_start` is the earliest date `first_funded` may be TRUSTED -- the later of
+        the vault's earliest row and VAULT_COMPLETE_FROM (the verified-complete floor). The
+        caller must claim "added on or after this date" only for dates on/after it; before
+        it the vault is sparse and a funded wallet may simply be unrecorded, so reconstruct
+        instead of risking hiding money. See VAULT_COMPLETE_FROM.
         """
         rows = self._read_daily_report_rows()
         if rows is None:
             return {"ok": False, "snapshot": {}, "nearest_date": None,
-                    "nearest_snapshot": {}}
+                    "nearest_snapshot": {}, "first_funded": {}, "coverage_start": None}
+
+        first_funded = self._first_funded_from_rows(rows)
+        all_dates = [d for d in (normalize_iso_date(r[1]) for r in rows if len(r) > 1)
+                     if d is not None]
+        history_start = min(all_dates) if all_dates else None
+        # Trust first_funded only where the vault is verified-complete: the LATER of when
+        # rows begin and VAULT_COMPLETE_FROM. Never earlier than VAULT_COMPLETE_FROM, so a
+        # sparse pre-backfill row can never lower the floor and expose money to hiding.
+        coverage_start = (max(history_start, VAULT_COMPLETE_FROM)
+                          if history_start else VAULT_COMPLETE_FROM)
 
         exact = self._build_snapshot_from_rows(rows, date_str)
         if exact:
             return {"ok": True, "snapshot": exact, "nearest_date": None,
-                    "nearest_snapshot": {}}
+                    "nearest_snapshot": {}, "first_funded": first_funded,
+                    "coverage_start": coverage_start}
 
-        dates = sorted({r[1] for r in rows if len(r) > 1 and r[1]})
+        dates = sorted(set(all_dates))
         nearest_date, nearest_snapshot = self._nearest_from(rows, dates, date_str)
         return {"ok": True, "snapshot": {}, "nearest_date": nearest_date,
-                "nearest_snapshot": nearest_snapshot}
+                "nearest_snapshot": nearest_snapshot, "first_funded": first_funded,
+                "coverage_start": coverage_start}
 
     def get_snapshot_and_nearest(self, date_str):
         """Back-compatible 4-tuple view of get_history_bundle: (snapshot, nearest_date,

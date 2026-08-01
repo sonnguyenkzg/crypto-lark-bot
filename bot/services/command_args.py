@@ -35,6 +35,24 @@ def is_valid_iso_date(s: str) -> bool:
         return False
 
 
+def normalize_iso_date(s):
+    """Canonical zero-padded 'YYYY-MM-DD', or None if unparseable.
+
+    Comparing date strings lexicographically (as the vault code does throughout) is only
+    correct when every date is zero-padded: '2026-07-20' < '2026-7-20' is TRUE as text,
+    so a stray non-padded cell (e.g. a hand-edited DAILY_REPORT row) would sort wrongly.
+    Normalise BOTH sides before any date comparison so a malformed cell can never make a
+    real balance sort as "before it existed" and get hidden. strptime accepts padded and
+    non-padded input alike, so this repairs '2026-7-2' -> '2026-07-02'.
+    """
+    if not s:
+        return None
+    try:
+        return datetime.strptime(str(s).strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None
+
+
 def split_date(tokens):
     """Return (date_or_None, other_tokens). The first ISO-shaped token is the date."""
     date = None

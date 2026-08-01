@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Tuple
 from bot.services.wallet_service import WalletService
 from bot.services.balance_service import BalanceService
 from bot.services.chain_detector import detect_chain_from_address, get_chain_emoji, canonical_address
-from bot.services.command_args import resolve_fuzzy, parse_arguments, split_date, is_valid_iso_date, classify_tokens, extract_mode
+from bot.services.command_args import resolve_fuzzy, parse_arguments, split_date, is_valid_iso_date, classify_tokens, extract_mode, normalize_iso_date
 from bot.services.vault_calendar import target_date_for, OPENING, CLOSING
 from datetime import datetime, timezone, timedelta
 
@@ -295,18 +295,45 @@ class CheckHandler:
             _CHECK_EXECUTION_LOCK = False
             logger.info(f"🔓 Check command UNLOCKED - Execution finished for user {context.sender_id}")
 
-    def classify_wallets(self, roster, snapshot, date_str):
+    def classify_wallets(self, roster, snapshot, date_str, first_funded=None,
+                         coverage_start=None):
         """Decide, per wallet, what we can show for `date_str`. Pure - no network.
 
-        SCOPE: the wallets in wallets.json, and only those -- but ALL of them, always.
-        When a wallet was added to the list is never consulted: a wallet that did not
-        exist on `date_str` reconstructs to 0.00, which is the truthful answer. The
-        previous rule excluded such wallets and hid real money -- 31 wallets were
-        already holding 20,184,069.03 USDT combined before they entered monitoring.
+        SCOPE: the wallets in wallets.json, and only those -- but every wallet that
+        EXISTED on `date_str`, always. Existence is on-chain creation: a wallet is
+        counted from the first date it ever held a positive balance (`first_funded`),
+        never from when it was added to wallets.json. This matters two ways:
+          - A wallet funded and holding money BEFORE it entered monitoring is still
+            shown -- 31 wallets held 20,184,069.03 USDT combined before being added,
+            and hiding them understated the total. Their money is real, so it counts.
+          - A wallet created on day T genuinely had NO balance on day T-1, so for a date
+            before it was first funded it is reported "added on or after this date", not
+            reconstructed to a fictitious 0.00 for a day it did not yet exist.
 
-        status: saved         - a figure was recorded that day
-                needs_rebuild - no figure recorded, so work it out from the chain
+        `first_funded` maps canonical_address -> earliest positive-balance date. It is
+        trustworthy ONLY on/after `coverage_start`, the date the vault is verified-complete
+        (see VAULT_COMPLETE_FROM). Before that the vault is sparse: a wallet funded then can
+        have no row, so its first_funded reads later than its true creation. A wallet is
+        reported "added on or after this date" ONLY when `coverage_start <= date_str <
+        first_funded` -- i.e. the vault was recording completely and still did not see this
+        wallet, real evidence it did not exist. Below coverage_start, or with an unknown
+        creation (a wallet absent from first_funded), we reconstruct rather than risk
+        hiding money.
+
+        status: saved           - a figure was recorded that day
+                needs_rebuild   - the wallet existed, but no figure recorded; work it
+                                  out from the chain
+                not_yet_created - the wallet was first funded AFTER date_str (with the
+                                  vault already recording), so it had no balance then
         """
+        first_funded = first_funded or {}
+        # Normalise every date before comparing: raw string order is only correct when all
+        # dates are zero-padded, and a single non-padded value would sort a real balance as
+        # "before it existed" and hide it. `target` may fail to parse only for a caller
+        # that bypassed the is_valid_iso_date gate; then we skip the existence check
+        # entirely (reconstruct) rather than compare an unnormalised string.
+        target = normalize_iso_date(date_str)
+        floor = normalize_iso_date(coverage_start)
         out = []
         for w in roster:
             key = canonical_address(w.get("address", ""))
@@ -314,7 +341,12 @@ class CheckHandler:
             if entry:
                 status, balance = "saved", entry["balance"]
             else:
-                status, balance = "needs_rebuild", None
+                created = normalize_iso_date(first_funded.get(key))
+                if (target is not None and created is not None and floor is not None
+                        and floor <= target < created):
+                    status, balance = "not_yet_created", None
+                else:
+                    status, balance = "needs_rebuild", None
             out.append({"name": w.get("wallet"), "company": w.get("company", "Unknown"),
                         "address": w.get("address", ""), "chain": w.get("chain", "TRC20"),
                         "status": status, "balance": balance})
@@ -380,7 +412,9 @@ class CheckHandler:
 
         snapshot = bundle["snapshot"]
 
-        entries = self.classify_wallets(roster, snapshot, target_date)
+        entries = self.classify_wallets(roster, snapshot, target_date,
+                                        first_funded=bundle.get("first_funded"),
+                                        coverage_start=bundle.get("coverage_start"))
         entries, fuzzy, not_found = self._filter_entries(entries, groups, names)
 
         # Acknowledge immediately (same courtesy as the live /check path): reading the
@@ -924,6 +958,7 @@ class CheckHandler:
         n_saved = sum(1 for e in counted if e["status"] == "saved")
         n_rebuilt = sum(1 for e in counted if e["status"] == "rebuilt")
         failed = [e["name"] for e in entries if e["status"] == "failed"]
+        not_yet = [e["name"] for e in entries if e["status"] == "not_yet_created"]
 
         def names(ns):
             return ", ".join(f"**{n}**" for n in ns)
@@ -947,6 +982,16 @@ class CheckHandler:
             lines.append(f"• **{n_rebuilt}** were calculated from blockchain records")
         if failed:
             lines.append(f"• {names(failed)} — could not be calculated, so not counted")
+        if not_yet:
+            # A wallet first funded after this date had no balance yet, so it is neither
+            # counted nor rebuilt. On an early date dozens can qualify, so name them only
+            # when few enough to read; otherwise just state how many.
+            if len(not_yet) <= 6:
+                lines.append(f"• {names(not_yet)} — added on or after this date, "
+                             "so no balance yet")
+            else:
+                lines.append(f"• **{len(not_yet)}** wallets were added on or after this "
+                             "date, so they had no balance yet")
         lines.append(f"➡️ **{len(counted)} {'wallet' if len(counted) == 1 else 'wallets'} "
                      f"counted** in the total below")
 
