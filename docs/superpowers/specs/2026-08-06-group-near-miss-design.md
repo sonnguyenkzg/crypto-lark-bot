@@ -36,21 +36,24 @@ of the wallet names: `OKKZ, OKKZ1A…5A, KZO, KZP, KZG, S5, S5A, KZDW, DPP`) —
 individual wallet names, which is too noisy.
 
 ```
-group_near_miss(token, wallet_names, floor=0.6, margin=0.10):
+group_near_miss(token, wallet_names, floor=0.6, margin=0.15):
     anchors = distinct leading tokens of wallet_names
     score each anchor by difflib ratio to the token (case-insensitive)
     keep anchors with score >= floor, best first
     if none                       -> "none"       (fall through, see §4)
     best = the top anchor
-    rivals = other kept anchors within `margin` of best whose PREFIX-EXPANSION is a
+    rivals = other kept anchors within `margin` of best whose FAMILY-EXPANSION is a
              genuinely different wallet set (not a subset/superset of best's)
     if rivals                     -> "ambiguous"  (best + rivals)
-    else                          -> "confident"  (best, expand to all names starting best)
+    else                          -> "confident"  (best, expand to the group family of best)
 ```
 
-**Prefix expansion, not group-equality.** A confident hit expands to every wallet whose
-name *starts with* the anchor. So `OKKZ` catches both `OKKZ 1…5` and `OKKZ1A…5A` = 10 —
-matching exactly what typing `okkz` gives. (Group-by-first-word alone would give only 5.)
+**Exact-family expansion (NOT raw prefix).** A confident hit expands to wallets whose name
+is the anchor, or starts with anchor+space, or anchor+a **digit**. This keeps numbered
+variants together — `OKKZ` catches `OKKZ 1…5` and `OKKZ1A…5A` = 10 — while never letting a
+short code swallow a longer letter-suffixed distinct group: **`S5` must not include `S5A`.**
+Raw prefix expansion (an earlier draft) did swallow it — a codex-found over-count. A typo
+between `S5` and `S5A` (`s5b`) is therefore ambiguous, not a silent broad `S5`.
 
 **Why rivals are compared by result set, not score.** For `okz`, the runner-up anchors
 `OKKZ1A…` also score ~0.67, but their expansions are *subsets* of the `OKKZ` expansion, so
@@ -93,7 +96,7 @@ Verified on the live roster:
 ## 6. Where it lives
 
 - `bot/services/command_args.py` — new pure function `resolve_group_near_miss(token,
-  wallet_names, floor=0.6, margin=0.10) -> (verdict, anchor_or_list, wallets)`. No network,
+  wallet_names, floor=0.6, margin=0.15) -> (verdict, anchor_or_list, wallets)`. No network,
   no I/O; unit-testable in isolation.
 - `bot/handlers/check_handler.py` — the filter path calls it for each unresolved token:
   confident → extend the matched set + record the header; ambiguous → record the notice;

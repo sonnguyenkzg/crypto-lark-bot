@@ -87,3 +87,29 @@ def test_empty_inputs_are_safe():
 def test_confident_wallets_are_in_roster_order():
     _, _, wallets = resolve_group_near_miss("okz", ROSTER)
     assert wallets == [n for n in ROSTER if n.startswith("OKKZ")]
+
+
+def test_s5b_does_not_swallow_s5a_into_s5():
+    """codex-found: `s5b` (typo of S5A) must NOT confidently return the broad S5 group
+    with S5A merged in. S5 and S5A are distinct groups; the near-miss is ambiguous."""
+    verdict, anchor, wallets = resolve_group_near_miss("s5b", ROSTER)
+    assert verdict == "ambiguous"
+    assert "S5" in anchor and "S5A" in anchor
+    assert wallets == []
+
+
+def test_s5_family_never_includes_s5a():
+    """Even a confident S5 hit must exclude S5A (letter-suffixed distinct group)."""
+    # force a confident S5 by using a token far closer to S5 than S5A
+    verdict, anchor, wallets = resolve_group_near_miss("s5 ", ROSTER)
+    if verdict == "confident":
+        assert anchor == "S5"
+        assert "S5A" not in wallets
+        assert wallets == ["S5 KZWL TRC20", "S5 Tech TRC20"]
+
+
+def test_okkz_family_still_includes_numbered_variants():
+    """The exact-family rule must keep OKKZ1A..5A under OKKZ (digit suffix) -> okz = 10."""
+    _, anchor, wallets = resolve_group_near_miss("okz", ROSTER)
+    assert anchor == "OKKZ"
+    assert "OKKZ1A" in wallets and "OKKZ 1" in wallets and len(wallets) == 10

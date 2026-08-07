@@ -177,7 +177,7 @@ def extract_mode(tokens):
     return (modes.pop() if modes else None), rest, False
 
 
-def resolve_group_near_miss(token, wallet_names, floor=0.6, margin=0.10):
+def resolve_group_near_miss(token, wallet_names, floor=0.6, margin=0.15):
     """Resolve a group typo that missed every literal tier (e.g. "okz" -> OKKZ).
 
     Call this ONLY when resolve_fuzzy fell to the "closest match" tier. It matches the
@@ -206,9 +206,19 @@ def resolve_group_near_miss(token, wallet_names, floor=0.6, margin=0.10):
     def ratio(a, b):
         return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
-    def expand(prefix):
-        p = prefix.lower()
-        return [n for n in wallet_names if n.lower().startswith(p)]
+    def expand(code):
+        # EXACT group family, not raw prefix: a wallet belongs to group `code` if its name
+        # is `code`, or starts with `code`+space, or `code`+a DIGIT. This keeps numbered
+        # variants together (OKKZ catches OKKZ1A..5A -> okz still means all 10) while NEVER
+        # letting a short code swallow a longer, letter-suffixed distinct group
+        # (S5 must not swallow S5A). Prefix-only expansion over-counted here (codex-found).
+        c = code.lower()
+        out = []
+        for n in wallet_names:
+            nl = n.lower()
+            if nl == c or nl.startswith(c + " ") or (nl.startswith(c) and nl[len(c):len(c) + 1].isdigit()):
+                out.append(n)
+        return out
 
     scored = sorted(((ratio(qn, a), a) for a in anchors), reverse=True)
     kept = [(s, a) for s, a in scored if s >= floor]
