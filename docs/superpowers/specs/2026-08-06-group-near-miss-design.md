@@ -48,12 +48,13 @@ group_near_miss(token, wallet_names, floor=0.6, margin=0.15):
     else                          -> "confident"  (best, expand to the group family of best)
 ```
 
-**Exact-family expansion (NOT raw prefix).** A confident hit expands to wallets whose name
-is the anchor, or starts with anchor+space, or anchor+a **digit**. This keeps numbered
-variants together — `OKKZ` catches `OKKZ 1…5` and `OKKZ1A…5A` = 10 — while never letting a
-short code swallow a longer letter-suffixed distinct group: **`S5` must not include `S5A`.**
-Raw prefix expansion (an earlier draft) did swallow it — a codex-found over-count. A typo
-between `S5` and `S5A` (`s5b`) is therefore ambiguous, not a silent broad `S5`.
+**Exact first-token group expansion (NOT prefix, NOT a digit heuristic).** A confident hit
+expands to wallets whose FIRST token equals the anchor exactly. Every wallet is therefore
+in exactly one group, so a short code can NEVER swallow a longer one. Two earlier drafts
+were codex-refuted: raw prefix let `S5` swallow `S5A`; a digit-suffix rule let a `S5`+digit
+group (`S55A`) merge into `S5`. Exact first-token has no such hole. Consequence: `okz`
+resolves to the **OKKZ group = 5** (OKKZ 1..5); the `OKKZ1A..5A` variants are their own
+one-wallet groups. A typo between `S5` and `S5A` (`s5b`) is ambiguous, not a silent `S5`.
 
 **Why rivals are compared by result set, not score.** For `okz`, the runner-up anchors
 `OKKZ1A…` also score ~0.67, but their expansions are *subsets* of the `OKKZ` expansion, so
@@ -64,7 +65,7 @@ Verified on the live roster:
 
 | Token | Verdict | Result |
 |---|---|---|
-| `okz` | confident | OKKZ → **10** wallets |
+| `okz` | confident | OKKZ group → **5** wallets |
 | `kzdww` | confident | KZDW → 7 wallets |
 | `dpp` | confident | DPP → 1 wallet |
 | `s5a` | confident | S5A → 1 wallet |
@@ -106,7 +107,7 @@ Verified on the live roster:
 
 Unit tests on `resolve_group_near_miss` against a fixed roster fixture: `okz`→confident
 OKKZ (10), `kz0`→ambiguous {KZG,KZO,KZP}, `kzdww`→confident KZDW, `dpy cyo`/`zzz qqq`→none,
-`dpp`→confident (1), and threshold edges. Handler tests: `[okz]` yields scope 10 with the
+`dpp`→confident (1), and threshold edges. Handler tests: `[okz]` yields scope 5 with the
 header; `[kz0]` yields the ambiguity notice and 0 counted; `[okkz]` and `[kzo]` unchanged
 (literal tiers). Plus a real-roster self-test and the full suite (253 baseline).
 

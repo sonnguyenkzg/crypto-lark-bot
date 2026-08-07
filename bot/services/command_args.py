@@ -207,18 +207,14 @@ def resolve_group_near_miss(token, wallet_names, floor=0.6, margin=0.15):
         return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
     def expand(code):
-        # EXACT group family, not raw prefix: a wallet belongs to group `code` if its name
-        # is `code`, or starts with `code`+space, or `code`+a DIGIT. This keeps numbered
-        # variants together (OKKZ catches OKKZ1A..5A -> okz still means all 10) while NEVER
-        # letting a short code swallow a longer, letter-suffixed distinct group
-        # (S5 must not swallow S5A). Prefix-only expansion over-counted here (codex-found).
+        # EXACT first-token group: a wallet belongs to group `code` only if its FIRST token
+        # equals `code` (case-insensitive). No prefix, no digit heuristic -- string prefixes
+        # cannot reliably encode group hierarchy, so any "OKKZ1A is part of OKKZ" rule is
+        # exploitable (codex: a "S5"+digit group like S55A would wrongly merge into S5).
+        # This makes every wallet belong to exactly one group, so a short code can NEVER
+        # swallow a longer one. OKKZ1A..5A are their own groups, distinct from OKKZ.
         c = code.lower()
-        out = []
-        for n in wallet_names:
-            nl = n.lower()
-            if nl == c or nl.startswith(c + " ") or (nl.startswith(c) and nl[len(c):len(c) + 1].isdigit()):
-                out.append(n)
-        return out
+        return [n for n in wallet_names if n.split() and n.split()[0].lower() == c]
 
     scored = sorted(((ratio(qn, a), a) for a in anchors), reverse=True)
     kept = [(s, a) for s, a in scored if s >= floor]
