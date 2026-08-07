@@ -27,9 +27,9 @@ def test_okz_filter_returns_all_ten_okkz_not_three():
     h = CheckHandler()
     entries, fuzzy, not_found, group_hits, ambiguous = h._filter_entries(
         list(ROSTER), groups=[], names=["okz"])
-    assert {e["name"] for e in entries} == {"OKKZ 1", "OKKZ 2", "OKKZ 3", "OKKZ 4", "OKKZ 5"}
+    assert len(entries) == 10
     assert "okz" in group_hits and group_hits["okz"][0] == "OKKZ"
-    assert group_hits["okz"][1] == 5
+    assert group_hits["okz"][1] == 10
     assert not ambiguous
     assert not not_found
 

@@ -48,13 +48,15 @@ group_near_miss(token, wallet_names, floor=0.6, margin=0.15):
     else                          -> "confident"  (best, expand to the group family of best)
 ```
 
-**Exact first-token group expansion (NOT prefix, NOT a digit heuristic).** A confident hit
-expands to wallets whose FIRST token equals the anchor exactly. Every wallet is therefore
-in exactly one group, so a short code can NEVER swallow a longer one. Two earlier drafts
-were codex-refuted: raw prefix let `S5` swallow `S5A`; a digit-suffix rule let a `S5`+digit
-group (`S55A`) merge into `S5`. Exact first-token has no such hole. Consequence: `okz`
-resolves to the **OKKZ group = 5** (OKKZ 1..5); the `OKKZ1A..5A` variants are their own
-one-wallet groups. A typo between `S5` and `S5A` (`s5b`) is ambiguous, not a silent `S5`.
+**Explicit group family map (decided with Son 2026-08-06).** A wallet's group is its first
+token, folded to a family parent via an EXPLICIT `GROUP_FAMILY` map (currently only
+`OKKZ1A..5A -> OKKZ`). So `okz` -> OKKZ = all **10** (matching what correct `okkz` returns
+today), while `S5` never captures the distinct `S5A`. This is explicit, not a string rule:
+codex refuted a raw-prefix expansion (`S5` swallowed `S5A`) AND a digit-suffix heuristic (a
+`S5`+digit group `S55A` merged into `S5`) AND flagged the okz(5)-vs-okkz(10) inconsistency
+of exact-first-token grouping. The map makes near-miss and correct spelling agree, adds no
+over-count hole, and is a one-line edit when a new variant batch ships. Groups are disjoint,
+so any rival within margin is a different group -> ambiguous (`s5b` -> S5 or S5A).
 
 **Why rivals are compared by result set, not score.** For `okz`, the runner-up anchors
 `OKKZ1A…` also score ~0.67, but their expansions are *subsets* of the `OKKZ` expansion, so
@@ -65,7 +67,7 @@ Verified on the live roster:
 
 | Token | Verdict | Result |
 |---|---|---|
-| `okz` | confident | OKKZ group → **5** wallets |
+| `okz` | confident | OKKZ family → **10** wallets (== `okkz`) |
 | `kzdww` | confident | KZDW → 7 wallets |
 | `dpp` | confident | DPP → 1 wallet |
 | `s5a` | confident | S5A → 1 wallet |
@@ -107,7 +109,7 @@ Verified on the live roster:
 
 Unit tests on `resolve_group_near_miss` against a fixed roster fixture: `okz`→confident
 OKKZ (10), `kz0`→ambiguous {KZG,KZO,KZP}, `kzdww`→confident KZDW, `dpy cyo`/`zzz qqq`→none,
-`dpp`→confident (1), and threshold edges. Handler tests: `[okz]` yields scope 5 with the
+`dpp`→confident (1), and threshold edges. Handler tests: `[okz]` yields scope 10 with the
 header; `[kz0]` yields the ambiguity notice and 0 counted; `[okkz]` and `[kzo]` unchanged
 (literal tiers). Plus a real-roster self-test and the full suite (253 baseline).
 

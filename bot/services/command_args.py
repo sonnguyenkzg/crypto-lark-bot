@@ -177,44 +177,61 @@ def extract_mode(tokens):
     return (modes.pop() if modes else None), rest, False
 
 
+# Group families: variant first-tokens that are really ONE group. The roster introduced
+# OKKZ1A..5A as a second batch of the OKKZ family, so they belong to group "OKKZ" (matching
+# what typing the correct prefix "okkz" returns -- 10 wallets). This is an EXPLICIT list,
+# not a string rule: a heuristic like "<code>+digit is the same family" was codex-refuted
+# (it would wrongly merge a distinct "S5"+digit group such as S55A into S5). Anything not
+# listed here is its own group by first token, so a short code can never swallow a longer
+# one (S5 never includes the distinct S5A). Add a line here when a new variant batch ships.
+GROUP_FAMILY = {
+    "OKKZ1A": "OKKZ", "OKKZ2A": "OKKZ", "OKKZ3A": "OKKZ",
+    "OKKZ4A": "OKKZ", "OKKZ5A": "OKKZ",
+}
+
+
+def group_code(wallet_name):
+    """The group a wallet belongs to: its first token, folded to the family parent."""
+    toks = wallet_name.split()
+    if not toks:
+        return ""
+    return GROUP_FAMILY.get(toks[0], toks[0])
+
+
 def resolve_group_near_miss(token, wallet_names, floor=0.6, margin=0.15):
     """Resolve a group typo that missed every literal tier (e.g. "okz" -> OKKZ).
 
     Call this ONLY when resolve_fuzzy fell to the "closest match" tier. It matches the
-    token against the group codes -- the distinct leading tokens of the wallet names --
+    token against the GROUP CODES (the distinct group_code values of the wallet names),
     which is far less noisy than matching against whole wallet names.
 
     Returns (verdict, anchor, wallets):
-      "confident", <group code>, <every wallet whose name starts with it>   -- one clear winner
-      "ambiguous", <sorted list of tied group codes>, []                    -- a real tie, refuse
-      "none",      None, []                                                 -- nothing close; caller falls back
+      "confident", <group code>, <every wallet in that group>   -- one clear winner
+      "ambiguous", <sorted list of tied group codes>, []        -- a real tie, refuse
+      "none",      None, []                                     -- nothing close; caller falls back
 
     A wallet-name typo (e.g. "dpy cyo") matches no group code and returns "none", so the
     caller keeps today's single-wallet closest-match behaviour for those.
 
-    "confident" requires a clear winner: any rival within `margin` of the best score whose
-    prefix-expansion is a genuinely different wallet set (neither a subset nor a superset of
-    the best) makes it "ambiguous". Rivals that only expand to a subset of the best (e.g.
-    "OKKZ1A" under "OKKZ") are not competitors and do not block confidence.
+    Groups are disjoint (each wallet has exactly one group_code), so any rival within
+    `margin` of the best score is a genuinely different group and makes the result
+    "ambiguous" -- a confident hit is one clear winner, never a guess between groups.
     """
     qn = normalize_name(token)
     if not qn or not wallet_names:
         return "none", None, []
 
-    anchors = sorted({n.split()[0] for n in wallet_names if n.split()})
+    anchors = sorted({group_code(n) for n in wallet_names if group_code(n)})
 
     def ratio(a, b):
         return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
     def expand(code):
-        # EXACT first-token group: a wallet belongs to group `code` only if its FIRST token
-        # equals `code` (case-insensitive). No prefix, no digit heuristic -- string prefixes
-        # cannot reliably encode group hierarchy, so any "OKKZ1A is part of OKKZ" rule is
-        # exploitable (codex: a "S5"+digit group like S55A would wrongly merge into S5).
-        # This makes every wallet belong to exactly one group, so a short code can NEVER
-        # swallow a longer one. OKKZ1A..5A are their own groups, distinct from OKKZ.
+        # A wallet is in group `code` iff its group_code equals it. group_code folds a
+        # variant first-token (OKKZ1A) to its family parent (OKKZ) via the explicit
+        # GROUP_FAMILY map -- so OKKZ = all 10, but S5 never captures the distinct S5A.
         c = code.lower()
-        return [n for n in wallet_names if n.split() and n.split()[0].lower() == c]
+        return [n for n in wallet_names if group_code(n).lower() == c]
 
     scored = sorted(((ratio(qn, a), a) for a in anchors), reverse=True)
     kept = [(s, a) for s, a in scored if s >= floor]
