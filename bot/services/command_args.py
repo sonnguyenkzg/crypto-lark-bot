@@ -217,7 +217,7 @@ def resolve_group_near_miss(token, wallet_names, floor=0.6, margin=0.15):
     `margin` of the best score is a genuinely different group and makes the result
     "ambiguous" -- a confident hit is one clear winner, never a guess between groups.
     """
-    qn = normalize_name(token)
+    qn, qs = normalize_name(token), squash_name(token)
     if not qn or not wallet_names:
         return "none", None, []
 
@@ -225,6 +225,14 @@ def resolve_group_near_miss(token, wallet_names, floor=0.6, margin=0.15):
 
     def ratio(a, b):
         return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+    def wscore(name):
+        # Head-aware, like resolve_fuzzy: lets a short typo match a long WALLET name.
+        cn, cs = normalize_name(name), squash_name(name)
+        return max(SequenceMatcher(None, qn, cn).ratio(),
+                   SequenceMatcher(None, qn, cn[:len(qn)]).ratio(),
+                   SequenceMatcher(None, qs, cs).ratio(),
+                   SequenceMatcher(None, qs, cs[:len(qs)]).ratio())
 
     def expand(code):
         # A wallet is in group `code` iff its group_code equals it. group_code folds a
@@ -239,6 +247,14 @@ def resolve_group_near_miss(token, wallet_names, floor=0.6, margin=0.15):
         return "none", None, []
 
     best_score, best_anchor = kept[0]
+
+    # A typo of a specific WALLET (e.g. "okz1a" -> the single wallet OKKZ1A) must NOT
+    # expand to that wallet's whole group. Only treat the token as a GROUP near-miss when
+    # it is at least as close to a group code as to any single wallet name; otherwise
+    # defer ("none") to the caller's single-wallet closest-match. (codex: "okz1a" wrongly
+    # expanded to the OKKZ group of 10.)
+    if best_score < max((wscore(n) for n in wallet_names), default=0.0):
+        return "none", None, []
     best_set = set(expand(best_anchor))
 
     rivals = []

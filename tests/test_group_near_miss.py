@@ -89,9 +89,13 @@ def test_a_short_exact_group_still_resolves_confidently():
     assert verdict == "confident" and anchor == "DPP" and wallets == ["DPP COY TRC"]
 
 
-def test_a_typo_of_an_okkz_variant_still_resolves_to_the_okkz_family():
-    verdict, anchor, wallets = resolve_group_near_miss("okz1a", ROSTER)
-    assert verdict == "confident" and anchor == "OKKZ" and len(wallets) == 10
+def test_a_typo_of_a_specific_variant_wallet_does_not_expand_to_its_group():
+    """codex-found: `okz1a` means the single wallet OKKZ1A, not the whole OKKZ group.
+    It is closer to the wallet name than to the group code, so the group near-miss
+    defers ('none') to the caller's single-wallet closest-match."""
+    verdict, _, wallets = resolve_group_near_miss("okz1a", ROSTER)
+    assert verdict == "none"
+    assert wallets == []
 
 
 def test_a_wallet_name_typo_returns_none_so_the_caller_can_fall_through():
@@ -114,3 +118,11 @@ def test_every_confident_hit_is_a_single_group():
         verdict, _, wallets = resolve_group_near_miss(token, ROSTER)
         if verdict == "confident":
             assert len({group_code(w) for w in wallets}) == 1
+
+
+def test_group_fires_only_when_closer_to_a_group_than_any_wallet():
+    """The guard that separates okz (group) from okz1a (wallet)."""
+    # okz: closer to the OKKZ group code than to any wallet -> group
+    assert resolve_group_near_miss("okz", ROSTER)[0] == "confident"
+    # dpy cyo: closer to the wallet DPP COY TRC than to the DPP group -> defer
+    assert resolve_group_near_miss("dpy cyo", ROSTER)[0] == "none"
