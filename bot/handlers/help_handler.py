@@ -78,7 +78,7 @@ class HelpHandler:
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": "• **/start** - Start the bot and check connection\n• **/help** - Show available commands and their descriptions\n• **/list** - Show all configured wallets\n• **/add [company] [wallet name] [address]** - Add a new wallet\n• **/remove [wallet name or address]** - Remove a wallet\n• **/check** - Check all wallet balances\n• **/check [2026-07-15]** - balance at the END of that day (closing)\n• **/check [2026-07-15] [o]** - balance at the START of that day (opening)\n• **/check [2026-07-15] [c]** - balance at the end of that day, said explicitly\n• **/check [2026-07-15] [KZDW]** - one group, that day's closing balance\n• **/check [2026-07-15] [o] [KZDW]** - one group, that day's opening balance\n• **/check [2026-07-15] [KZP 96G1]** - one wallet on that date (typo-tolerant)\n\nSpacing does not matter: **[2026-07-15][KZDW]** works the same."
+                                "content": "• **/start** - Start the bot and check connection\n• **/help** - Show available commands and their descriptions\n• **/list** - Show all configured wallets\n• **/add [company] [wallet name] [address]** - Add a new wallet\n• **/remove [wallet name or address]** - Remove a wallet\n• **/check** - Check all wallet balances right now"
                             }
                         }
                     ]
@@ -88,7 +88,31 @@ class HelpHandler:
                 {
                     "tag": "hr"
                 },
-                
+
+                # Check a balance on a date (dedicated guide)
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": "**📅 Check a balance on any date:**"
+                    }
+                },
+                {
+                    "tag": "div",
+                    "fields": [
+                        {
+                            "is_short": False,
+                            "text": {
+                                "tag": "lark_md",
+                                "content": "• **/check** — everyone's balance right now\n• **/check [2026-07-15]** — that day's **closing** balance (end of day)\n• **/check [2026-07-15] [o]** — that day's **opening** balance (start of day)\n• **/check [2026-07-15] [c]** — closing, said explicitly\n• Narrow it to a group or wallet: **/check [2026-07-15] [KZDW]** or **/check [2026-07-15] [KZP 96G1]**\n• Dates go in [ ] and spacing doesn't matter — **[2026-07-15][o]** works too\n• Every dated figure is the balance at **midnight (00:00) GMT+7**"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "tag": "hr"
+                },
+
                 # Examples Section
                 {
                     "tag": "div",
