@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Tuple
 from bot.services.wallet_service import WalletService
 from bot.services.balance_service import BalanceService
 from bot.services.chain_detector import detect_chain_from_address, get_chain_emoji, canonical_address
-from bot.services.command_args import resolve_fuzzy, parse_arguments, split_date, is_valid_iso_date, classify_tokens, extract_mode, normalize_iso_date
+from bot.services.command_args import resolve_fuzzy, parse_arguments, split_date, is_valid_iso_date, classify_tokens, extract_mode, normalize_iso_date, resolve_group_near_miss
 from bot.services.vault_calendar import target_date_for, OPENING, CLOSING
 from datetime import datetime, timezone, timedelta
 
@@ -415,7 +415,7 @@ class CheckHandler:
         entries = self.classify_wallets(roster, snapshot, target_date,
                                         first_funded=bundle.get("first_funded"),
                                         coverage_start=bundle.get("coverage_start"))
-        entries, fuzzy, not_found = self._filter_entries(entries, groups, names)
+        entries, fuzzy, not_found, group_hits, ambiguous = self._filter_entries(entries, groups, names)
 
         # Acknowledge immediately (same courtesy as the live /check path): reading the
         # sheet takes a moment and a gap date can take up to ~90s to rebuild, so the user
@@ -459,7 +459,8 @@ class CheckHandler:
 
         card = self._create_historical_card(entries, date_str, fuzzy, not_found, saved_batch,
                                            mode=mode, target_date=target_date,
-                                           roster_total=len(roster), filtered=bool(groups or names))
+                                           roster_total=len(roster), filtered=bool(groups or names),
+                                           group_hits=group_hits, ambiguous=ambiguous)
 
         await context.topic_manager.send_command_response(card, msg_type="interactive")
         return True
@@ -506,27 +507,45 @@ class CheckHandler:
             pool.shutdown(wait=False, cancel_futures=True)
 
     def _filter_entries(self, entries, groups, names):
-        """Apply company/wallet-name filters. Returns (entries, fuzzy, not_found)."""
+        """Apply company/wallet-name filters.
+
+        Returns (entries, fuzzy, not_found, group_hits, ambiguous):
+          fuzzy      {want: [wallet names]}  -- single-wallet closest-match guesses
+          not_found  [want]                  -- nothing matched at all
+          group_hits {want: (group_code, count)} -- a typo confidently expanded to a group
+          ambiguous  {want: [group codes]}   -- a typo that ties across groups; nothing counted
+        """
         if groups:
             wanted = {g.lower() for g in groups}
             entries = [e for e in entries if e["company"].lower() in wanted]
-        fuzzy, not_found = {}, []
+        fuzzy, not_found, group_hits, ambiguous = {}, [], {}, {}
         if names:
             all_names = [e["name"] for e in entries]
             picked, seen = [], set()
             for want in names:
                 matches, tier = resolve_fuzzy(want, all_names)
-                if not matches:
+                if tier == "closest match":
+                    # A genuine typo. Before falling back to the capped single-wallet
+                    # guess, see whether it clearly means a GROUP (e.g. "okz" -> OKKZ) so
+                    # the whole group is returned instead of 3 arbitrary members.
+                    verdict, anchor, gwallets = resolve_group_near_miss(want, all_names)
+                    if verdict == "confident":
+                        matches = gwallets
+                        group_hits[want] = (anchor, len(gwallets))
+                    elif verdict == "ambiguous":
+                        ambiguous[want] = anchor
+                        continue                  # refuse to guess a group -> count nothing
+                    else:
+                        fuzzy[want] = matches      # a mistyped wallet name, keep old behaviour
+                elif not matches:
                     not_found.append(want)
                     continue
-                if tier == "closest match":
-                    fuzzy[want] = matches
                 for e in entries:
                     if e["name"] in matches and id(e) not in seen:
                         seen.add(id(e))
                         picked.append(e)
             entries = picked
-        return entries, fuzzy, not_found
+        return entries, fuzzy, not_found, group_hits, ambiguous
 
     def _create_balance_table_card_with_sheets_info(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str, not_found: List[str], sheets_logged: bool = False, batch_id: str = None) -> dict:        
         """Create table using Lark's column layout for better formatting with Google Sheets info."""
@@ -923,7 +942,8 @@ class CheckHandler:
         }
 
     def _create_historical_card(self, entries, date_str, fuzzy, not_found, saved_batch,
-                                mode=None, target_date=None, roster_total=None, filtered=False):
+                                mode=None, target_date=None, roster_total=None, filtered=False,
+                                group_hits=None, ambiguous=None):
         """Balance table for a past date, plus a plain account of where each figure came from.
 
         `date_str` is the day the user asked about; `target_date` is the vault row the
@@ -1011,6 +1031,16 @@ class CheckHandler:
 
         # (could-not-work-out is itemised in the summary above, so it is not repeated
         # as a separate note here.)
+
+        for want, (anchor, count) in (group_hits or {}).items():
+            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                f'🔍 Closest match to "{want}": **{anchor}** '
+                f'({count} {"wallet" if count == 1 else "wallets"}).'}})
+
+        for want, options in (ambiguous or {}).items():
+            joined = ", ".join(options[:-1]) + " or " + options[-1] if len(options) > 1 else options[0]
+            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                f'⚠️ "{want}" could be **{joined}** — type the one you mean.'}})
 
         for want, matches in (fuzzy or {}).items():
             header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":

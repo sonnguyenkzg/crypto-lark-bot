@@ -175,3 +175,57 @@ def extract_mode(tokens):
     if len(modes) > 1:
         return None, rest, True
     return (modes.pop() if modes else None), rest, False
+
+
+def resolve_group_near_miss(token, wallet_names, floor=0.6, margin=0.10):
+    """Resolve a group typo that missed every literal tier (e.g. "okz" -> OKKZ).
+
+    Call this ONLY when resolve_fuzzy fell to the "closest match" tier. It matches the
+    token against the group codes -- the distinct leading tokens of the wallet names --
+    which is far less noisy than matching against whole wallet names.
+
+    Returns (verdict, anchor, wallets):
+      "confident", <group code>, <every wallet whose name starts with it>   -- one clear winner
+      "ambiguous", <sorted list of tied group codes>, []                    -- a real tie, refuse
+      "none",      None, []                                                 -- nothing close; caller falls back
+
+    A wallet-name typo (e.g. "dpy cyo") matches no group code and returns "none", so the
+    caller keeps today's single-wallet closest-match behaviour for those.
+
+    "confident" requires a clear winner: any rival within `margin` of the best score whose
+    prefix-expansion is a genuinely different wallet set (neither a subset nor a superset of
+    the best) makes it "ambiguous". Rivals that only expand to a subset of the best (e.g.
+    "OKKZ1A" under "OKKZ") are not competitors and do not block confidence.
+    """
+    qn = normalize_name(token)
+    if not qn or not wallet_names:
+        return "none", None, []
+
+    anchors = sorted({n.split()[0] for n in wallet_names if n.split()})
+
+    def ratio(a, b):
+        return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+    def expand(prefix):
+        p = prefix.lower()
+        return [n for n in wallet_names if n.lower().startswith(p)]
+
+    scored = sorted(((ratio(qn, a), a) for a in anchors), reverse=True)
+    kept = [(s, a) for s, a in scored if s >= floor]
+    if not kept:
+        return "none", None, []
+
+    best_score, best_anchor = kept[0]
+    best_set = set(expand(best_anchor))
+
+    rivals = []
+    for s, a in kept[1:]:
+        if best_score - s > margin:
+            break
+        other = set(expand(a))
+        if not (other <= best_set or best_set <= other):   # genuinely different result set
+            rivals.append(a)
+
+    if rivals:
+        return "ambiguous", sorted([best_anchor, *rivals]), []
+    return "confident", best_anchor, expand(best_anchor)
