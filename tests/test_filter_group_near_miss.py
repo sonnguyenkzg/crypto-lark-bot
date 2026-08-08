@@ -25,7 +25,7 @@ ROSTER = _entries([
 
 def test_okz_filter_returns_all_ten_okkz_not_three():
     h = CheckHandler()
-    entries, fuzzy, not_found, group_hits, ambiguous = h._filter_entries(
+    entries, fuzzy, not_found, group_hits, ambiguous, _addr = h._filter_entries(
         list(ROSTER), groups=[], names=["okz"])
     assert len(entries) == 10
     assert "okz" in group_hits and group_hits["okz"][0] == "OKKZ"
@@ -36,7 +36,7 @@ def test_okz_filter_returns_all_ten_okkz_not_three():
 
 def test_kz0_filter_is_ambiguous_and_counts_nothing():
     h = CheckHandler()
-    entries, fuzzy, not_found, group_hits, ambiguous = h._filter_entries(
+    entries, fuzzy, not_found, group_hits, ambiguous, _addr = h._filter_entries(
         list(ROSTER), groups=[], names=["kz0"])
     assert entries == []
     assert "kz0" in ambiguous
@@ -47,7 +47,7 @@ def test_kz0_filter_is_ambiguous_and_counts_nothing():
 def test_a_correct_group_prefix_is_untouched_by_the_near_miss_path():
     """`okkz` hits the literal starts-with tier and must NOT be flagged as a near-miss."""
     h = CheckHandler()
-    entries, fuzzy, not_found, group_hits, ambiguous = h._filter_entries(
+    entries, fuzzy, not_found, group_hits, ambiguous, _addr = h._filter_entries(
         list(ROSTER), groups=[], names=["okkz"])
     assert len(entries) == 10
     assert not group_hits            # literal match, no "closest match to" header
@@ -57,7 +57,7 @@ def test_a_correct_group_prefix_is_untouched_by_the_near_miss_path():
 def test_a_wallet_name_typo_still_uses_single_wallet_fuzzy():
     """`dpy cyo` matches no group; it keeps the existing closest-match-to-a-wallet path."""
     h = CheckHandler()
-    entries, fuzzy, not_found, group_hits, ambiguous = h._filter_entries(
+    entries, fuzzy, not_found, group_hits, ambiguous, _addr = h._filter_entries(
         list(ROSTER), groups=[], names=["dpy cyo"])
     assert [e["name"] for e in entries] == ["DPP COY TRC"]
     assert "dpy cyo" in fuzzy
@@ -66,7 +66,7 @@ def test_a_wallet_name_typo_still_uses_single_wallet_fuzzy():
 
 def test_nonsense_is_still_not_found():
     h = CheckHandler()
-    entries, fuzzy, not_found, group_hits, ambiguous = h._filter_entries(
+    entries, fuzzy, not_found, group_hits, ambiguous, _addr = h._filter_entries(
         list(ROSTER), groups=[], names=["zzz qqq"])
     assert entries == []
     assert "zzz qqq" in not_found

@@ -390,7 +390,7 @@ class CheckHandler:
 
         companies = sorted({info["company"] for info in wallet_data.values()})
         names_all = [info["wallet"] for info in wallet_data.values()]
-        groups, names = classify_tokens(other_tokens, companies, names_all)
+        groups, names, addresses = classify_tokens(other_tokens, companies, names_all)
 
         roster = [{"wallet": i["wallet"], "company": i["company"], "address": i["address"],
                    "chain": i.get("chain", "TRC20"), "created_at": i.get("created_at")}
@@ -415,15 +415,18 @@ class CheckHandler:
         entries = self.classify_wallets(roster, snapshot, target_date,
                                         first_funded=bundle.get("first_funded"),
                                         coverage_start=bundle.get("coverage_start"))
-        entries, fuzzy, not_found, group_hits, ambiguous = self._filter_entries(entries, groups, names)
+        entries, fuzzy, not_found, group_hits, ambiguous, addr_report = self._filter_entries(
+            entries, groups, names, addresses)
 
         # Acknowledge immediately (same courtesy as the live /check path): reading the
         # sheet takes a moment and a gap date can take up to ~90s to rebuild, so the user
         # should never be left staring at silence. Sent AFTER filters are resolved so it
-        # can report the match count, echoing back what was understood.
+        # can report the match count and the address validation (✅/❌/⚠️) -- the AE sees
+        # what was understood BEFORE any waiting begins.
         await context.topic_manager.send_command_response(
             self._create_historical_checking_card(date_str, groups, names, len(entries),
-                                                  mode=mode, roster_total=len(roster)),
+                                                  mode=mode, roster_total=len(roster),
+                                                  addresses=addresses, addr_report=addr_report),
             msg_type="interactive")
 
         todo = [e for e in entries if e["status"] == "needs_rebuild"]
@@ -459,8 +462,10 @@ class CheckHandler:
 
         card = self._create_historical_card(entries, date_str, fuzzy, not_found, saved_batch,
                                            mode=mode, target_date=target_date,
-                                           roster_total=len(roster), filtered=bool(groups or names),
-                                           group_hits=group_hits, ambiguous=ambiguous)
+                                           roster_total=len(roster),
+                                           filtered=bool(groups or names or addresses),
+                                           group_hits=group_hits, ambiguous=ambiguous,
+                                           addr_report=addr_report)
 
         await context.topic_manager.send_command_response(card, msg_type="interactive")
         return True
@@ -506,22 +511,54 @@ class CheckHandler:
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
-    def _filter_entries(self, entries, groups, names):
-        """Apply company/wallet-name filters.
+    def _filter_entries(self, entries, groups, names, addresses=None):
+        """Apply company / wallet-name / wallet-address filters.
 
-        Returns (entries, fuzzy, not_found, group_hits, ambiguous):
-          fuzzy      {want: [wallet names]}  -- single-wallet closest-match guesses
-          not_found  [want]                  -- nothing matched at all
-          group_hits {want: (group_code, count)} -- a typo confidently expanded to a group
-          ambiguous  {want: [group codes]}   -- a typo that ties across groups; nothing counted
+        Returns (entries, fuzzy, not_found, group_hits, ambiguous, addr_report):
+          fuzzy       {want: [wallet names]}  -- single-wallet closest-match guesses
+          not_found   [want]                  -- a name that matched nothing at all
+          group_hits  {want: (group_code, count)} -- a typo confidently expanded to a group
+          ambiguous   {want: [group codes]}   -- a typo that ties across groups; nothing counted
+          addr_report {"requested": int, "matched": [{address,name,chain}],
+                       "invalid": [raw...], "unmonitored": [raw...]}
+                      -- each requested address lands in exactly one of matched / invalid /
+                         unmonitored, so the result can reconcile "checked N of M" and flag
+                         the skipped ones (never a silent partial).
+
+        A GROUP narrows the candidate pool; a NAME resolves within that narrowed pool
+        (fuzzy). A wallet ADDRESS is an exact identifier, so it is ADDITIVE: it always
+        resolves against the FULL roster and is included regardless of any group filter.
+        All selectors de-duplicate by wallet identity.
         """
+        addresses = addresses or []
+        # Full roster BEFORE any group narrowing: addresses judge monitored/unmonitored and
+        # match against every wallet, not just the group-narrowed subset.
+        full_roster = list(entries)
+
         if groups:
             wanted = {g.lower() for g in groups}
             entries = [e for e in entries if e["company"].lower() in wanted]
+
         fuzzy, not_found, group_hits, ambiguous = {}, [], {}, {}
+        addr_report = {"requested": len(addresses), "matched": [],
+                       "invalid": [], "unmonitored": []}
+
+        # No explicit selection at all -> return the current scope (the whole roster, or the
+        # group-narrowed subset). This is `/check [date]` and `/check [date] [GROUP]`.
+        if not names and not addresses:
+            return entries, fuzzy, not_found, group_hits, ambiguous, addr_report
+
+        picked, seen = [], set()
+
+        def _take(e):
+            if id(e) not in seen:
+                seen.add(id(e))
+                picked.append(e)
+
         if names:
+            # Names resolve WITHIN the current scope (group-narrowed if a group was given):
+            # only the matched wallets are selected, not the whole group.
             all_names = [e["name"] for e in entries]
-            picked, seen = [], set()
             for want in names:
                 matches, tier = resolve_fuzzy(want, all_names)
                 if tier == "closest match":
@@ -541,11 +578,32 @@ class CheckHandler:
                     not_found.append(want)
                     continue
                 for e in entries:
-                    if e["name"] in matches and id(e) not in seen:
-                        seen.add(id(e))
-                        picked.append(e)
-            entries = picked
-        return entries, fuzzy, not_found, group_hits, ambiguous
+                    if e["name"] in matches:
+                        _take(e)
+        elif groups:
+            # A group WITH addresses but no name filter: the whole group is in scope, and the
+            # addresses (below) add any exact wallets on top of it. (Without addresses this
+            # path is unreachable -- the no-selection early-return above already handled it.)
+            for e in entries:
+                _take(e)
+
+        if addresses:
+            for raw in addresses:
+                chain = detect_chain_from_address(raw)
+                if chain is None:
+                    addr_report["invalid"].append(raw)   # malformed -> flagged, not guessed
+                    continue
+                target = canonical_address(raw)
+                hit = next((e for e in full_roster
+                            if canonical_address(e.get("address", "")) == target), None)
+                if hit is None:
+                    addr_report["unmonitored"].append(raw)  # valid, but not in the roster
+                    continue
+                addr_report["matched"].append(
+                    {"address": raw, "name": hit["name"], "chain": chain})
+                _take(hit)
+
+        return picked, fuzzy, not_found, group_hits, ambiguous, addr_report
 
     def _create_balance_table_card_with_sheets_info(self, balances: Dict[str, Decimal], wallets_to_check: Dict[str, Dict], time_str: str, not_found: List[str], sheets_logged: bool = False, batch_id: str = None) -> dict:        
         """Create table using Lark's column layout for better formatting with Google Sheets info."""
@@ -943,7 +1001,7 @@ class CheckHandler:
 
     def _create_historical_card(self, entries, date_str, fuzzy, not_found, saved_batch,
                                 mode=None, target_date=None, roster_total=None, filtered=False,
-                                group_hits=None, ambiguous=None):
+                                group_hits=None, ambiguous=None, addr_report=None):
         """Balance table for a past date, plus a plain account of where each figure came from.
 
         `date_str` is the day the user asked about; `target_date` is the vault row the
@@ -1049,6 +1107,23 @@ class CheckHandler:
         for want in (not_found or []):
             header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
                 f'❌ Wallet "{want}" not found.'}})
+
+        # Address reconciliation: how many of the addresses given were actually checked, and
+        # -- explicitly, never silently -- which were skipped and why. Matched addresses are
+        # already in the table above (by wallet name), so only the skips are repeated here.
+        if addr_report and addr_report.get("requested"):
+            req = addr_report["requested"]
+            got = len(addr_report["matched"])
+            header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                f"🔑 **Checked {got} of {req} {'address' if req == 1 else 'addresses'}"
+                + (" given.**" if got == req else " given — the rest were skipped:**")}})
+            for raw in addr_report["invalid"]:
+                header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                    f'❌ `{raw}` — not a valid wallet address, so it was skipped.'}})
+            for raw in addr_report["unmonitored"]:
+                header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
+                    f'⚠️ `{self._abbrev_address(raw)}` — a valid address, but not in the '
+                    'monitored list, so it was skipped.'}})
 
         header_elements.append({"tag": "div", "text": {"tag": "lark_md", "content":
             f"⏰ **Time:** {self.balance_service.get_current_gmt_time()} GMT+7"}})
@@ -1231,14 +1306,41 @@ class CheckHandler:
             ]
         }
 
+    @staticmethod
+    def _abbrev_address(addr):
+        """Middle-elided address for display: 'TR7NHq…gjLj6t'. Short strings are left whole."""
+        a = str(addr)
+        return f"{a[:6]}…{a[-4:]}" if len(a) > 14 else a
+
+    def _address_validation_lines(self, addr_report):
+        """The ✅ / ❌ / ⚠️ verdict lines for the addresses given, or [] if none were.
+
+        Shared by the acknowledgement card (shown before the lookup) and the result card
+        (shown after), so the AE sees the same verdict up front and on reconciliation.
+        """
+        if not addr_report or not addr_report.get("requested"):
+            return []
+        lines = ["", "🔑 **Addresses:**"]
+        for m in addr_report["matched"]:
+            lines.append(f"✅ `{self._abbrev_address(m['address'])}` → **{m['name']}**")
+        for raw in addr_report["invalid"]:
+            lines.append(f"❌ `{raw}` — not a valid wallet address")
+        for raw in addr_report["unmonitored"]:
+            lines.append(f"⚠️ `{self._abbrev_address(raw)}` — valid address, "
+                         "but not in the monitored list")
+        return lines
+
     def _create_historical_checking_card(self, date_str, groups=None, names=None, matched=None,
-                                         mode=None, roster_total=None) -> dict:
+                                         mode=None, roster_total=None, addresses=None,
+                                         addr_report=None) -> dict:
         """Confirm what the bot understood, before any waiting begins.
 
         States the number of wallets under monitoring rather than an internal "matched"
         count, so the figure always reconciles to the wallet list. Also states which
         basis (opening or closing) is being fetched, so this acknowledgement and the
-        result card that follows never disagree about what the figure means.
+        result card that follows never disagree about what the figure means. When wallet
+        addresses were given, their ✅/❌/⚠️ validation is shown HERE -- before the lookup --
+        so a bad address is caught up front, not after a wait.
         """
         mode = mode or CLOSING
         lines = [f"📅 **Date:** {date_str}",
@@ -1248,11 +1350,12 @@ class CheckHandler:
         if names:
             lines.append(f"👛 **Wallets requested:** {', '.join(f'**{n}**' for n in names)}")
         if matched is not None:
-            if groups or names:
+            if groups or names or addresses:
                 lines.append(f"📊 **Wallets in scope: {matched}"
                              + (f" of {roster_total} monitored" if roster_total else "") + "**")
             else:
                 lines.append(f"📊 **Total wallets in monitoring: {matched}**")
+        lines.extend(self._address_validation_lines(addr_report))
         lines.append("\nReading recorded balances; anything not yet recorded will be calculated.")
         return {
             "config": {"wide_screen_mode": True, "enable_forward": False},

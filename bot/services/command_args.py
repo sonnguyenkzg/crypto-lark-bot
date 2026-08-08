@@ -65,20 +65,46 @@ def split_date(tokens):
     return date, rest
 
 
-def classify_tokens(tokens, companies, wallet_names):
-    """Split tokens into (groups, names) by content.
+def looks_like_address(token):
+    """True when a token is an ATTEMPT to give a wallet address, by content alone.
 
-    A token that matches a company name (case-insensitive) is a group;
-    the group interpretation wins even if it also matches a wallet name.
+    Recognises the intent, not the validity: a garbled address (`0x123`) is still an
+    address attempt, so it can be flagged "invalid" downstream instead of being misfiled
+    as a wallet name. The strict format check lives in detect_chain_from_address.
+
+    An address token has no spaces (wallet names do) and either:
+      - starts with a literal lowercase `0x`  (ERC20, matching detect_chain_from_address), or
+      - starts with `T` and is at least 30 chars long (TRC20; the length floor keeps a short
+        code or name like "Tech" from being taken as an address).
+
+    No group code or wallet name is a space-free 30-char `T…` string, so there is no
+    collision with the existing group/name classification.
+    """
+    if not token:
+        return False
+    s = token.strip()
+    if not s or any(ch.isspace() for ch in s):
+        return False
+    return s.startswith("0x") or (s.startswith("T") and len(s) >= 30)
+
+
+def classify_tokens(tokens, companies, wallet_names):
+    """Split tokens into (groups, names, addresses) by content.
+
+    Order of precedence: an address-shaped token (see looks_like_address) is an address; a
+    token that matches a company name (case-insensitive) is a group -- the group
+    interpretation wins even if it also matches a wallet name; anything else is a name.
     """
     comp_lower = {c.lower() for c in companies}
-    groups, names = [], []
+    groups, names, addresses = [], [], []
     for t in tokens:
-        if t.lower() in comp_lower:
+        if looks_like_address(t):
+            addresses.append(t)
+        elif t.lower() in comp_lower:
             groups.append(t)
         else:
             names.append(t)
-    return groups, names
+    return groups, names, addresses
 
 
 def normalize_name(s):
