@@ -18,7 +18,8 @@ Filter a dated `/check` by wallet **address** instead of (or alongside) name/gro
 /check [date] [c] [address] ...         -> closing, explicit
 ```
 
-An address is a **precise, typo-proof way to name a monitored wallet** — reconciliation-friendly.
+An address is a **precise way to name a monitored wallet by exact match** (no fuzzy guessing, so
+never the wrong wallet) — reconciliation-friendly.
 
 ## 2. Two decisions made with Son
 

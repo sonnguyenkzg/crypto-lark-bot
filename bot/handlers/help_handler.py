@@ -104,7 +104,7 @@ class HelpHandler:
                             "is_short": False,
                             "text": {
                                 "tag": "lark_md",
-                                "content": "• **/check** — everyone's balance right now\n• **/check [2026-07-15]** — that day's **closing** balance (end of day)\n• **/check [2026-07-15] [o]** — that day's **opening** balance (start of day)\n• **/check [2026-07-15] [c]** — closing, said explicitly\n• Narrow it to a group or wallet: **/check [2026-07-15] [KZDW]** or **/check [2026-07-15] [KZP 96G1]**\n• Or by wallet **address** (exact, typo-proof): **/check [2026-07-15] [TVbEfiMhs7c94u6SeAY65vZR9C5eLQRMSD]** — give several to add them up; only the monitored wallets can be looked up, and a bad or unmonitored address is flagged (✅/❌/⚠️), never silently skipped\n• Dates go in [ ] and spacing doesn't matter — **[2026-07-15][o]** works too\n• Every dated figure is the balance at **midnight (00:00) GMT+7**"
+                                "content": "• **/check** — everyone's balance right now\n• **/check [2026-07-15]** — that day's **closing** balance (end of day)\n• **/check [2026-07-15] [o]** — that day's **opening** balance (start of day)\n• **/check [2026-07-15] [c]** — closing, said explicitly\n• Narrow it to a group or wallet: **/check [2026-07-15] [KZDW]** or **/check [2026-07-15] [KZP 96G1]**\n• Or by wallet **address**: **/check [2026-07-15] [TVbEfiMhs7c94u6SeAY65vZR9C5eLQRMSD]** — an address is matched **exactly**, so you get that wallet or a clear error, never the wrong wallet by a typo (a mistyped *name* can be guessed wrong; an address can't). Give several to add them up; only the monitored wallets can be looked up, and a bad or unmonitored address is flagged (✅/❌/⚠️), never silently skipped\n• Dates go in [ ] and spacing doesn't matter — **[2026-07-15][o]** works too\n• Every dated figure is the balance at **midnight (00:00) GMT+7**"
                             }
                         }
                     ]
@@ -209,7 +209,7 @@ class HelpHandler:
 • **/check [2026-07-15] [KZDW]** - one group, that day's closing balance
 • **/check [2026-07-15] [o] [KZDW]** - one group, that day's opening balance
 • **/check [2026-07-15] [KZP 96G1]** - one wallet on that date (typo-tolerant)
-• **/check [2026-07-15] [TVbEfiMhs7c94u6SeAY65vZR9C5eLQRMSD]** - one wallet by its address (exact, typo-proof; give several to add them up; a bad or unmonitored address is flagged, never silently skipped)
+• **/check [2026-07-15] [TVbEfiMhs7c94u6SeAY65vZR9C5eLQRMSD]** - one wallet by its address (matched exactly — you get that wallet or a clear error, never the wrong wallet by a typo; give several to add them up; a bad or unmonitored address is flagged, never silently skipped)
 
 Spacing does not matter: **[2026-07-15][KZDW]** works the same.
 
